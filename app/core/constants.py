@@ -1,0 +1,17 @@
+INTENT_CHECKOUT_ERROR = "checkout_error"
+INTENT_CART_RETRY = "cart_retry"
+INTENT_PRODUCT_LINK = "product_link"
+INTENT_PURCHASE_INTENT = "purchase_intent"
+INTENT_GREETING = "greeting"
+INTENT_GENERAL = "general"
+
+INTENTS = {
+    INTENT_CHECKOUT_ERROR,
+    INTENT_CART_RETRY,
+    INTENT_PRODUCT_LINK,
+    INTENT_PURCHASE_INTENT,
+    INTENT_GREETING,
+    INTENT_GENERAL,
+}
+
+FRUSTRATION_KEYWORDS = ["que saco", "ridiculo", "droga", "aff"]
