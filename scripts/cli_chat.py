@@ -9,7 +9,7 @@ from typing import NoReturn
 from dotenv import load_dotenv
 
 from app.core.constants import FRUSTRATION_KEYWORDS
-from app.core.router import classify_domain, classify_intent
+from app.core.router import classify
 from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
 from app.graphs.main_graph import run_main_graph
@@ -60,7 +60,13 @@ def print_help():
     print(f"  {Colors.GREEN}/help{Colors.ENDC}        : Show this help message\n")
 
 
-def run_chat(tenant_id: str, session_id: str, debug: bool, script_path: Path | None) -> int:
+def run_chat(
+    tenant_id: str,
+    session_id: str,
+    debug: bool,
+    script_path: Path | None,
+    use_llm_router: bool,
+) -> int:
     registry = TenantRegistry()
     try:
         tenant = registry.get(tenant_id)
@@ -117,8 +123,11 @@ def run_chat(tenant_id: str, session_id: str, debug: bool, script_path: Path | N
 
             # Logic Flow
             state.last_user_message = message
-            state.set_intent(classify_intent(message))
-            state.domain = classify_domain(message, state.intent)
+            domain, intent, entities, confidence = classify(message, use_llm=use_llm_router)
+            state.set_intent(intent)
+            state.domain = domain
+            if entities:
+                state.metadata["entities"] = entities
             
             if _has_frustration(message):
                 state.bump_frustration()
@@ -134,6 +143,8 @@ def run_chat(tenant_id: str, session_id: str, debug: bool, script_path: Path | N
                 print(f"  Tenant: {state.tenant_id}")
                 print(f"  Domain: {state.domain}")
                 print(f"  Intent: {state.intent}")
+                print(f"  Confidence: {confidence}")
+                print(f"  Entities: {entities}")
 
                 print(f"  Last Strategy: {state.last_strategy}")
                 print(f"  Action Success: {state.last_action_success}")
@@ -153,11 +164,12 @@ def main() -> int:
     parser.add_argument("--session", default=uuid.uuid4().hex, help="Session ID")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--script", type=Path, help="Path to a script file")
+    parser.add_argument("--llm-router", dest="llm_router", action="store_true", default=True)
+    parser.add_argument("--no-llm-router", dest="llm_router", action="store_false")
     args = parser.parse_args()
 
-    return run_chat(args.tenant, args.session, args.debug, args.script)
+    return run_chat(args.tenant, args.session, args.debug, args.script, args.llm_router)
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
