@@ -9,6 +9,12 @@ from app.core.tenancy import TenantConfig
 
 
 def store_qa_decide(state: ConversationState, tenant: TenantConfig) -> ConversationState:
+    if state.needs_handoff:
+        state.next_step = "handoff"
+        state.last_action = "route_to_handoff"
+        state.last_action_success = True
+        return state
+
     if state.intent in {
         INTENT_STORE_QUESTION,
         INTENT_SHIPPING_QUESTION,

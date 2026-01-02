@@ -13,8 +13,9 @@ INTENT_ORDER_COMPLAINT = "order_complaint"
 INTENT_PROVIDE_ORDER_ID = "provide_order_id"
 INTENT_PROVIDE_EMAIL = "provide_email"
 INTENT_GENERAL = "general"
+DEFAULT_INTENT = INTENT_GENERAL
 
-INTENT_DESCRIPTIONS = {
+INTENT_DESCRIPTIONS: dict[str, str] = {
     INTENT_CHECKOUT_ERROR: "User reports checkout link error or failure.",
     INTENT_CART_RETRY: "User asks to retry or regenerate checkout/cart link.",
     INTENT_PRODUCT_LINK: "User shares a product URL.",
@@ -32,7 +33,8 @@ INTENT_DESCRIPTIONS = {
     INTENT_GENERAL: "General or unclear message.",
 }
 
-SUPPORTED_INTENTS = list(INTENT_DESCRIPTIONS.keys())
+SUPPORTED_INTENTS: tuple[str, ...] = tuple(INTENT_DESCRIPTIONS.keys())
+SUPPORTED_DOMAINS: tuple[str, ...] = ("sales", "support", "store_qa")
 
 INTENTS = set(SUPPORTED_INTENTS)
 

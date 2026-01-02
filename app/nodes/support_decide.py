@@ -26,6 +26,12 @@ def _extract_email(message: str) -> str | None:
 
 
 def support_decide(state: ConversationState, tenant: TenantConfig) -> ConversationState:
+    if state.needs_handoff:
+        state.next_step = "handoff"
+        state.last_action = "route_to_handoff"
+        state.last_action_success = True
+        return state
+
     if state.intent == INTENT_ORDER_COMPLAINT:
         state.metadata["complaint_pending"] = True
 
