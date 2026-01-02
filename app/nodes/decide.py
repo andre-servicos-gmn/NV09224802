@@ -11,6 +11,12 @@ from app.core.tenancy import TenantConfig
 
 
 def decide(state: ConversationState, tenant: TenantConfig) -> ConversationState:
+    if state.needs_handoff:
+        state.next_step = "handoff"
+        state.last_action = "route_to_handoff"
+        state.last_action_success = True
+        return state
+
     if state.frustration_level >= 3:
         state.next_step = "handoff"
         return state

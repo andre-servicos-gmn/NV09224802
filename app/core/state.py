@@ -19,6 +19,10 @@ class ConversationState(BaseModel):
     last_strategy: str | None = None
     last_action_success: bool = True
     frustration_level: int = 0
+    sentiment_level: str = "calm"
+    sentiment_score: float = 0.0
+    needs_handoff: bool = False
+    handoff_reason: str | None = None
     last_user_message: str | None = None
     last_bot_message: str | None = None
     next_step: str | None = None

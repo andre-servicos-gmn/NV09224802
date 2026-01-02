@@ -9,7 +9,7 @@ from typing import NoReturn
 from dotenv import load_dotenv
 
 from app.core.constants import FRUSTRATION_KEYWORDS
-from app.core.router import classify
+from app.core.router import apply_entities_to_state, classify
 from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
 from app.graphs.main_graph import run_main_graph
@@ -123,13 +123,24 @@ def run_chat(
 
             # Logic Flow
             state.last_user_message = message
-            domain, intent, entities, confidence = classify(message, use_llm=use_llm_router)
-            state.set_intent(intent)
-            state.domain = domain
-            if entities:
-                state.metadata["entities"] = entities
-            
-            if _has_frustration(message):
+            context = {
+                "tenant_id": state.tenant_id,
+                "session_id": state.session_id,
+                "last_domain": state.domain,
+                "last_intent": state.intent,
+                "has_variant_id": bool(state.selected_variant_id),
+                "has_order_id": bool(state.order_id),
+            }
+            decision = classify(message, context=context, use_llm=use_llm_router)
+            state.set_intent(decision.intent)
+            state.domain = decision.domain
+            apply_entities_to_state(state, decision.entities)
+            state.sentiment_level = decision.sentiment_level
+            state.sentiment_score = decision.sentiment_score
+            state.needs_handoff = decision.needs_handoff
+            state.handoff_reason = decision.handoff_reason
+
+            if decision.sentiment_level != "calm" or _has_frustration(message):
                 state.bump_frustration()
                 if debug:
                     print(f"{Colors.FAIL}[Frustration Detected]{Colors.ENDC}")
@@ -141,10 +152,20 @@ def run_chat(
             if debug:
                 print(f"\n{Colors.WARNING}[DEBUG INFO]{Colors.ENDC}")
                 print(f"  Tenant: {state.tenant_id}")
+                print(f"  Session: {state.session_id}")
                 print(f"  Domain: {state.domain}")
                 print(f"  Intent: {state.intent}")
-                print(f"  Confidence: {confidence}")
-                print(f"  Entities: {entities}")
+                print(f"  Confidence: {decision.confidence}")
+                print(f"  Entities: {decision.entities}")
+                print(f"  Used Fallback: {decision.used_fallback}")
+                print(f"  Reason: {decision.reason}")
+                print(f"  Sentiment Level: {decision.sentiment_level}")
+                print(f"  Sentiment Score: {decision.sentiment_score}")
+                print(f"  Needs Handoff: {decision.needs_handoff}")
+                print(f"  Handoff Reason: {decision.handoff_reason}")
+                print(f"  Sentiment LLM: {decision.used_sentiment_llm}")
+                if decision.used_fallback:
+                    print(f"  Fallback: ACTIVE")
 
                 print(f"  Last Strategy: {state.last_strategy}")
                 print(f"  Action Success: {state.last_action_success}")
