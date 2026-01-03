@@ -17,7 +17,7 @@ class ConversationState(BaseModel):
     ticket_opened: bool = False
     last_action: str | None = None
     last_strategy: str | None = None
-    last_action_success: bool = True
+    last_action_success: bool | None = None  # None = no action ran yet
     frustration_level: int = 0
     sentiment_level: str = "calm"
     sentiment_score: float = 0.0
@@ -27,9 +27,24 @@ class ConversationState(BaseModel):
     last_bot_message: str | None = None
     next_step: str | None = None
     metadata: dict = Field(default_factory=dict)
+    # Conversation memory for personalized context
+    conversation_history: list[dict] = Field(default_factory=list)
+    original_complaint: str | None = None  # Stores the original issue for context
 
     def bump_frustration(self) -> None:
         self.frustration_level += 1
 
     def set_intent(self, intent: str) -> None:
         self.intent = intent
+
+    def add_to_history(self, role: str, message: str) -> None:
+        """Add a message to conversation history (max 10 messages for context)."""
+        self.conversation_history.append({"role": role, "message": message})
+        # Keep only last 10 messages to avoid token overflow
+        if len(self.conversation_history) > 10:
+            self.conversation_history = self.conversation_history[-10:]
+        # Capture original complaint for persistent context
+        if role == "user" and not self.original_complaint:
+            if any(w in message.lower() for w in ["errado", "problema", "reclamação", "atrasado", "não chegou", "defeito"]):
+                self.original_complaint = message
+

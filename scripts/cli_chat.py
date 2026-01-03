@@ -123,6 +123,7 @@ def run_chat(
 
             # Logic Flow
             state.last_user_message = message
+            state.add_to_history("user", message)  # Add to conversation memory
             context = {
                 "tenant_id": state.tenant_id,
                 "session_id": state.session_id,
@@ -146,6 +147,7 @@ def run_chat(
                     print(f"{Colors.FAIL}[Frustration Detected]{Colors.ENDC}")
 
             state = run_main_graph(state, tenant)
+            state.add_to_history("agent", state.last_bot_message or "")  # Add bot response to memory
             
             print(f"{Colors.GREEN}Agent:{Colors.ENDC} {state.last_bot_message}")
 

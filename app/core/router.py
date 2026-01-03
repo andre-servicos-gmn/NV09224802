@@ -25,15 +25,10 @@ from .constants import (
     SUPPORTED_INTENTS,
 )
 from .router_llm import classify_with_llm
-from .sentiment import analyze_sentiment_local
-from .sentiment_llm import analyze_sentiment_llm
+from .sentiment import analyze_sentiment_llm
 
 CACHE_TTL_SECONDS = 120.0
 LLM_TIMEOUT_S = float(os.getenv("ROUTER_LLM_TIMEOUT_S", "12"))
-SENTIMENT_LLM_TIMEOUT_S = float(os.getenv("SENTIMENT_LLM_TIMEOUT_S", "8"))
-SENTIMENT_LLM_ENABLED = os.getenv("SENTIMENT_LLM_ENABLED", "false").lower() == "true"
-SENTIMENT_LLM_THRESHOLD_LOW = float(os.getenv("SENTIMENT_LLM_THRESHOLD_LOW", "0.35"))
-SENTIMENT_LLM_THRESHOLD_HIGH = float(os.getenv("SENTIMENT_LLM_THRESHOLD_HIGH", "0.65"))
 _CACHE: dict[tuple[str, str, str], tuple[float, "RouterDecision"]] = {}
 
 
@@ -192,12 +187,27 @@ def _merge_entities(primary: dict, secondary: dict) -> dict:
 def apply_entities_to_state(state, entities: dict) -> None:
     if not entities:
         return
-    if state.order_id is None and entities.get("order_id"):
-        state.order_id = entities.get("order_id")
-    if state.customer_email is None and entities.get("email"):
-        state.customer_email = entities.get("email")
+    
+    new_order_id = entities.get("order_id")
+    if new_order_id:
+        # ALWAYS overwrite order_id when user provides a new one
+        # This respects user corrections per AGENT.md canonical state contract
+        if state.order_id != new_order_id:
+            # Clear stale tracking data from previous order
+            state.tracking_url = None
+            state.tracking_last_update_days = None
+            state.metadata.pop("order_status", None)
+            state.ticket_opened = False
+        state.order_id = new_order_id
+    
+    new_email = entities.get("email")
+    if new_email:
+        # ALWAYS overwrite email when user provides a new one
+        state.customer_email = new_email
+    
     if entities.get("product_url") and not state.metadata.get("product_url"):
         state.metadata["product_url"] = entities.get("product_url")
+    
     state.metadata["entities"] = entities
 
 
@@ -207,26 +217,8 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
         if cached:
             return cached
 
-    sentiment = analyze_sentiment_local(message)
-    used_sentiment_llm = False
-    if (
-        use_llm
-        and SENTIMENT_LLM_ENABLED
-        and not sentiment["needs_handoff"]
-        and SENTIMENT_LLM_THRESHOLD_LOW <= sentiment["sentiment_score"] <= SENTIMENT_LLM_THRESHOLD_HIGH
-        and os.getenv("OPENAI_API_KEY")
-    ):
-        try:
-            llm_result = analyze_sentiment_llm(message, timeout_s=SENTIMENT_LLM_TIMEOUT_S)
-            sentiment = {
-                "sentiment_level": llm_result.sentiment_level,
-                "sentiment_score": llm_result.sentiment_score,
-                "needs_handoff": llm_result.needs_handoff,
-                "handoff_reason": llm_result.handoff_reason,
-            }
-            used_sentiment_llm = True
-        except Exception:
-            pass
+    sentiment = analyze_sentiment_llm(message)
+    used_sentiment_llm = True
 
     if use_llm and os.getenv("OPENAI_API_KEY"):
         try:
