@@ -35,14 +35,23 @@ def support_decide(state: ConversationState, tenant: TenantConfig) -> Conversati
     if state.intent == INTENT_ORDER_COMPLAINT:
         state.metadata["complaint_pending"] = True
 
-    if not state.order_id:
-        order_id = _extract_order_id(state.last_user_message or "")
-        if order_id:
+    # Extract order_id from message - ALWAYS overwrite if intent is provide_order_id
+    # This respects user corrections per AGENT.md canonical state contract
+    order_id = _extract_order_id(state.last_user_message or "")
+    if order_id:
+        if state.intent == INTENT_PROVIDE_ORDER_ID or not state.order_id:
+            if state.order_id != order_id:
+                # Clear stale tracking data from previous order
+                state.tracking_url = None
+                state.tracking_last_update_days = None
+                state.metadata.pop("order_status", None)
+                state.ticket_opened = False
             state.order_id = order_id
 
-    if not state.customer_email:
-        email = _extract_email(state.last_user_message or "")
-        if email:
+    # Extract email - ALWAYS overwrite if intent is provide_email
+    email = _extract_email(state.last_user_message or "")
+    if email:
+        if state.intent == INTENT_PROVIDE_EMAIL or not state.customer_email:
             state.customer_email = email
 
     if state.last_action == "lookup_order":
