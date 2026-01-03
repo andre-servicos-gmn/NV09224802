@@ -135,9 +135,13 @@ COMPORTAMENTO:
 - Ofereça informações adicionais quando relevante
 
 EXEMPLOS DE RESPOSTAS:
-"O prazo de entrega é de 3 a 7 dias úteis, dependendo da sua região."
+"O prazo de entrega varia conforme a região e será informado no checkout."
 "Para trocas, você tem 30 dias. Enviaremos as instruções por email."
 "Aceitamos cartão de crédito, PIX e boleto bancário."
+
+REGRA IMPORTANTE:
+- NUNCA invente prazos ou SLAs específicos (ex: '3 a 7 dias úteis')
+- Use apenas informações da base de conhecimento ou diga que vai verificar
 """
 
 
@@ -178,7 +182,14 @@ def _build_context_prompt(
     # Action outcome - CRITICAL for Respond alignment per AGENT.md
     if state.last_action:
         lines.append(f"- Última ação executada: {state.last_action}")
-        lines.append(f"- Resultado da ação: {'SUCESSO' if state.last_action_success else 'FALHA'}")
+        # Tri-state: True=SUCESSO, False=FALHA, None=N/A (nenhuma action executada)
+        if state.last_action_success is True:
+            action_result = "SUCESSO"
+        elif state.last_action_success is False:
+            action_result = "FALHA"
+        else:
+            action_result = "N/A"
+        lines.append(f"- Resultado da ação: {action_result}")
     
     # Sales context
     if state.selected_product_id:
