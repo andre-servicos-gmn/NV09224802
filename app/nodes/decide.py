@@ -6,7 +6,6 @@ from app.core.constants import (
     INTENT_PURCHASE_INTENT,
 )
 from app.core.state import ConversationState
-from app.core.strategies import next_strategy
 from app.core.tenancy import TenantConfig
 
 
@@ -25,11 +24,17 @@ def decide(state: ConversationState, tenant: TenantConfig) -> ConversationState:
         state.next_step = "action_resolve_product"
         return state
 
+    if (
+        state.intent in {INTENT_CART_RETRY, INTENT_CHECKOUT_ERROR}
+        and state.last_action == "generate_link"
+        and state.last_action_success is False
+        and state.last_strategy == "human_handoff"
+    ):
+        state.next_step = "handoff"
+        return state
+
     if state.intent in {INTENT_PURCHASE_INTENT, INTENT_CART_RETRY, INTENT_CHECKOUT_ERROR}:
         if state.selected_variant_id:
-            if state.intent in {INTENT_CART_RETRY, INTENT_CHECKOUT_ERROR}:
-                if state.last_action_success is False:
-                    state.last_strategy = next_strategy(state.last_strategy)
             state.next_step = "action_generate_link"
         else:
             state.next_step = "respond"

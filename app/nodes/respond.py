@@ -1,3 +1,5 @@
+import os
+
 from app.core.constants import (
     INTENT_CART_RETRY,
     INTENT_CHECKOUT_ERROR,
@@ -15,10 +17,7 @@ _SYSTEM_PROMPT = (
     "Short, human sentences. No markdown. Raw URLs only. "
     "Order: empathy/confirmation, simple explanation, clear action. "
     "Do not ask for info already present in state. "
-    "If frustration_level >= 3, simplify and offer human handoff. "
     "If checkout_link is provided, include it exactly once. "
-    "If checkout_link is missing and intent is checkout_error or cart_retry, "
-    "use the tenant handoff message."
 )
 
 
@@ -71,8 +70,6 @@ def _fallback_response(state: ConversationState) -> ConversationState:
         parts.append("Poxa, entendo. Vou gerar um link mais estavel para o checkout.")
         if link:
             parts.append(link)
-        else:
-            parts.append("Nao consegui gerar um link agora. Vou te colocar com um atendente humano.")
     else:
         if link:
             parts.append("Pronto! Aqui esta o link para finalizar:")
@@ -91,6 +88,8 @@ def _fallback_response(state: ConversationState) -> ConversationState:
 
 def respond(state: ConversationState, tenant: TenantConfig) -> ConversationState:
     link = state.metadata.get("checkout_link")
+    if not os.getenv("OPENAI_API_KEY"):
+        return _fallback_response(state)
     try:
         user_prompt = _build_user_prompt(state, tenant, link)
         message = generate_response(_SYSTEM_PROMPT, user_prompt)

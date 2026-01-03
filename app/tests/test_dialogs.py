@@ -102,10 +102,10 @@ def test_router_llm_cases():
         message, expected_domain, expected_intent, expected_entities = parts
         cases.append((message, expected_domain, expected_intent, json.loads(expected_entities)))
 
-    if not os.getenv("OPENAI_API_KEY"):
+    if not os.getenv("OPENAI_API_KEY") or os.getenv("RUN_LLM_TESTS", "false").lower() != "true":
         for message, _domain, _intent, _entities in cases:
             classify(message, context=None, use_llm=False)
-        pytest.skip("OPENAI_API_KEY not set; skipping LLM router cases.")
+        pytest.skip("LLM router tests disabled (missing OPENAI_API_KEY or RUN_LLM_TESTS).")
 
     for message, expected_domain, expected_intent, expected_entities in cases:
         decision = classify(message, context=None, use_llm=True)

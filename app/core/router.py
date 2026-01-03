@@ -62,11 +62,89 @@ def _normalize(text: str) -> str:
 
 
 def classify_intent_heuristic(message: str) -> str:
-    """
-    Formerly used for keyword-based classification.
-    Now deprecated/removed to force 100% AI usage.
-    Returns general intent as a safe fallback if LLM fails.
-    """
+    msg = _normalize(message)
+    if not msg:
+        return INTENT_GENERAL
+
+    email_match = re.search(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", message.lower())
+    order_id_match = re.search(r"\b\d{3,}\b", msg)
+
+    checkout_error_phrases = [
+        "deu erro",
+        "erro",
+        "falhou",
+        "quebrou",
+        "nao funciona",
+        "nao abre",
+        "link nao funciona",
+    ]
+    cart_retry_phrases = [
+        "gera de novo",
+        "gere novamente",
+        "manda outro link",
+        "refaz",
+        "tenta de novo",
+        "envia de novo",
+        "regera",
+    ]
+    purchase_phrases = [
+        "quero comprar",
+        "comprar",
+        "pagar",
+        "checkout",
+        "finalizar",
+        "link de pagamento",
+    ]
+    greeting_phrases = ["oi", "ola", "bom dia", "boa tarde", "boa noite"]
+    order_complaint_phrases = [
+        "parado",
+        "nao atualiza",
+        "sem atualizacao",
+        "travado",
+        "atrasado",
+        "nao anda",
+    ]
+    order_tracking_phrases = [
+        "rastreio",
+        "rastreamento",
+        "tracking",
+        "codigo de rastreio",
+        "codigo de rastreamento",
+    ]
+    order_status_phrases = ["status do pedido", "status", "meu pedido", "pedido"]
+    shipping_phrases = ["frete", "entrega", "prazo", "envio", "shipping"]
+    payment_phrases = ["pagamento", "cartao", "pix", "boleto", "parcelamento"]
+    return_phrases = ["troca", "devolucao", "devolver", "reembolso", "return"]
+    store_phrases = ["contato", "horario", "endereco", "loja", "whatsapp"]
+
+    if any(phrase in msg for phrase in checkout_error_phrases):
+        return INTENT_CHECKOUT_ERROR
+    if any(phrase in msg for phrase in cart_retry_phrases):
+        return INTENT_CART_RETRY
+    if "http" in msg and "products/" in msg:
+        return INTENT_PRODUCT_LINK
+    if any(phrase in msg for phrase in purchase_phrases):
+        return INTENT_PURCHASE_INTENT
+    if any(phrase in msg for phrase in order_complaint_phrases):
+        return INTENT_ORDER_COMPLAINT
+    if any(phrase in msg for phrase in order_tracking_phrases):
+        return INTENT_ORDER_TRACKING
+    if any(phrase in msg for phrase in order_status_phrases):
+        return INTENT_ORDER_STATUS
+    if any(phrase in msg for phrase in shipping_phrases):
+        return INTENT_SHIPPING_QUESTION
+    if any(phrase in msg for phrase in payment_phrases):
+        return INTENT_PAYMENT_QUESTION
+    if any(phrase in msg for phrase in return_phrases):
+        return INTENT_RETURN_EXCHANGE
+    if any(phrase in msg for phrase in store_phrases):
+        return INTENT_STORE_QUESTION
+    if email_match:
+        return INTENT_PROVIDE_EMAIL
+    if order_id_match and msg.strip().isdigit():
+        return INTENT_PROVIDE_ORDER_ID
+    if any(phrase in msg for phrase in greeting_phrases):
+        return INTENT_GREETING
     return INTENT_GENERAL
 
 
@@ -262,10 +340,12 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
     else:
         fallback_reason = "llm_disabled_or_missing_key"
 
-    # Fallback when LLM fails:
-    # We removed keyword heuristics, so we default to a safe state.
-    intent = DEFAULT_INTENT
-    domain = "store_qa"
+    intent = classify_intent_heuristic(message)
+    if intent not in SUPPORTED_INTENTS:
+        intent = DEFAULT_INTENT
+    domain = classify_domain_heuristic(intent)
+    if domain not in SUPPORTED_DOMAINS:
+        domain = "store_qa"
     decision = RouterDecision(
         domain=domain,
         intent=intent,
