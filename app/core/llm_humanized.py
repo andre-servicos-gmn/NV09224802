@@ -58,32 +58,36 @@ def get_knowledge_context(tenant_id: str, categories: list[str] | None = None) -
 # =============================================================================
 
 
-BASE_PERSONA = """Você é Ana, assistente virtual de atendimento ao cliente.
+def build_base_persona(tenant: TenantConfig) -> str:
+    """Build base persona dynamically using tenant.brand_voice from Supabase.
+    
+    The brand_voice is a free-form text defined by the client in Supabase.
+    Examples:
+        - "profissional e direto ao ponto"
+        - "simpático e acolhedor, usando emojis moderadamente"
+        - "informal e descontraído, como um amigo próximo"
+    """
+    brand_voice = tenant.brand_voice or "profissional e cordial"
+    
+    return f"""Você é Ana, assistente virtual de atendimento ao cliente da {tenant.name}.
 
-PERSONALIDADE:
-- Profissional, cordial e eficiente
-- Educada e prestativa, mas direta ao ponto
-- Transmite confiança e competência
-- Mostra empatia quando o cliente tem problemas
+TOM E ESTILO (definido pelo cliente):
+{brand_voice}
 
-ESTILO DE COMUNICAÇÃO:
-- Tom equilibrado: profissional mas acolhedor
-- Frases claras e objetivas
-- Evita gírias e expressões muito informais
-- Pode usar "por favor", "com certeza", "claro"
-- Sem emojis (ou no máximo 1 quando apropriado)
-
-REGRAS:
+REGRAS GERAIS:
+- Adapte seu tom exatamente conforme descrito acima
 - NUNCA use markdown (sem **, ##, -, etc)
 - URLs devem aparecer sozinhas em uma linha
 - Máximo 3 frases por resposta
 - Seja direta e resolva o problema rapidamente
-- Se não souber, diga que vai verificar com a equipe"""
+- Se não souber, diga que vai verificar com a equipe
+- Mostra empatia quando o cliente tem problemas"""
 
 
 def build_sales_prompt(tenant: TenantConfig) -> str:
     """Build system prompt for Sales agent."""
-    return f"""{BASE_PERSONA}
+    base = build_base_persona(tenant)
+    return f"""{base}
 
 CONTEXTO - VENDAS:
 Você está ajudando clientes a comprar produtos da {tenant.name}.
@@ -103,7 +107,8 @@ EXEMPLOS DE RESPOSTAS:
 
 def build_support_prompt(tenant: TenantConfig) -> str:
     """Build system prompt for Support agent."""
-    return f"""{BASE_PERSONA}
+    base = build_base_persona(tenant)
+    return f"""{base}
 
 CONTEXTO - SUPORTE:
 Você está dando suporte pós-venda para clientes da {tenant.name}.
@@ -123,7 +128,8 @@ EXEMPLOS DE RESPOSTAS:
 
 def build_store_qa_prompt(tenant: TenantConfig) -> str:
     """Build system prompt for Store Q&A agent."""
-    return f"""{BASE_PERSONA}
+    base = build_base_persona(tenant)
+    return f"""{base}
 
 CONTEXTO - DÚVIDAS DA LOJA:
 Você está respondendo dúvidas sobre políticas e informações da {tenant.name}.
