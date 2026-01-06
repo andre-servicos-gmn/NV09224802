@@ -139,7 +139,8 @@ class TableQuery:
         response.raise_for_status()
         
         data = response.json()
-        return QueryResponse(data if isinstance(data, list) else [])
+        # Pass raw data to QueryResponse, which now handles dict->list conversion
+        return QueryResponse(data)
     
     def _execute_insert(self) -> "QueryResponse":
         """Executa INSERT."""
@@ -155,7 +156,7 @@ class TableQuery:
         response.raise_for_status()
         
         result = response.json()
-        return QueryResponse(result if isinstance(result, list) else [result])
+        return QueryResponse(result)
     
     def _execute_update(self) -> "QueryResponse":
         """Executa UPDATE."""
@@ -171,7 +172,7 @@ class TableQuery:
         response.raise_for_status()
         
         result = response.json()
-        return QueryResponse(result if isinstance(result, list) else [result])
+        return QueryResponse(result)
     
     def upsert(self, data: dict, on_conflict: Optional[str] = None) -> "TableQuery":
         """Prepara upsert."""
@@ -201,7 +202,12 @@ class QueryResponse:
     """Resposta de uma query Supabase."""
     
     def __init__(self, data: Any) -> None:
-        self.data = data if isinstance(data, list) else []
+        if isinstance(data, list):
+            self.data = data
+        elif isinstance(data, dict):
+            self.data = [data]
+        else:
+            self.data = []
 
 
 @lru_cache(maxsize=1)

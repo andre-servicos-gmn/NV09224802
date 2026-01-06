@@ -65,9 +65,28 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
             state.last_action = "get_order"
             return state
 
-        if not state.order_id and order.get("id"):
-            state.order_id = str(order.get("id"))
-        if not state.customer_email and order.get("email"):
+        # Success!
+        state.last_action_success = True
+        state.metadata.pop("order_error", None)
+        
+        # Store internal Shopify ID for technical reference, but keep state.order_id as customer facing number
+        if order.get("id"):
+            state.metadata["shopify_order_id"] = str(order.get("id"))
+            
+        # Ensure state.order_id is the customer facing number (ex: 1001)
+        # This is critical for UX consistency.
+        if order.get("order_number") and not state.order_id:
+            state.order_id = str(order.get("order_number"))
+        elif order.get("order_number") and state.order_id and str(order.get("order_number")) != str(state.order_id):
+            # If we found it via internal ID but state has something else, align it to number
+            # preventing internal ID from sticking in state.order_id
+            state.order_id = str(order.get("order_number"))
+
+        # Extract tracking
+        tracking_url, tracking_number = client.extract_tracking(order)
+        if tracking_url:
+            state.tracking_url = tracking_url
+        if order.get("email"):
             state.customer_email = order.get("email")
 
         state.metadata["order_status"] = order.get("financial_status")
