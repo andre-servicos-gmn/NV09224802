@@ -83,9 +83,13 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
             state.order_id = str(order.get("order_number"))
 
         # Extract tracking
+        # extract_tracking returns (tracking_url, tracking_number)
         tracking_url, tracking_number = client.extract_tracking(order)
-        if tracking_url:
-            state.tracking_url = tracking_url
+        
+        state.tracking_url = tracking_url
+        if tracking_number:
+            state.metadata["tracking_number"] = tracking_number
+        
         if order.get("email"):
             state.customer_email = order.get("email")
 
@@ -95,10 +99,6 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         state.metadata["order_created_at"] = order.get("created_at")
         if order.get("order_number") is not None:
             state.metadata["order_number"] = str(order.get("order_number"))
-
-        tracking_number, tracking_url = client.extract_tracking(order)
-        state.metadata["tracking_number"] = tracking_number
-        state.tracking_url = tracking_url
 
         state.last_action_success = True
         state.last_action = "get_order"

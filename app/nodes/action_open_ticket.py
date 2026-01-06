@@ -21,9 +21,9 @@ def action_open_ticket(state: ConversationState, tenant: TenantConfig) -> Conver
     payload = {key: value for key, value in payload.items() if value}
 
     try:
-        response = client.table("support_tickets").upsert(payload).execute_upsert()
-        state.ticket_opened = bool(response.data)
-        state.last_action_success = state.ticket_opened
+        client.table("support_tickets").upsert(payload).execute_upsert()
+        state.ticket_opened = True
+        state.last_action_success = True
     except Exception as exc:
         state.ticket_opened = False
         state.last_action_success = False
