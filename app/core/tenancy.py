@@ -74,7 +74,8 @@ class TenantRegistry:
         if not response.data:
             raise ValueError(f"Tenant not found: {tenant_id}")
         
-        data = response.data
+        # REST client always returns a list, get first element
+        data = response.data[0] if isinstance(response.data, list) else response.data
         
         # Check if tenant is active
         if not data.get("active", True):

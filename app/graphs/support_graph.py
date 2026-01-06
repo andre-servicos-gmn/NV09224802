@@ -1,7 +1,11 @@
+"""Support agent graph.
+
+Responsabilidade: orquestrar o fluxo do Support Agent com decide, actions, respond e handoff.
+"""
 from langgraph.graph import END, StateGraph
 
 from app.core.state import ConversationState
-from app.nodes.action_lookup_order import action_lookup_order
+from app.nodes.action_get_order import action_get_order
 from app.nodes.action_open_ticket import action_open_ticket
 from app.nodes.handoff import handoff
 from app.nodes.support_decide import support_decide
@@ -11,7 +15,7 @@ from app.nodes.support_respond import support_respond
 def _build_graph(tenant):
     graph = StateGraph(ConversationState)
     graph.add_node("support_decide", lambda state: support_decide(state, tenant))
-    graph.add_node("action_lookup_order", lambda state: action_lookup_order(state, tenant))
+    graph.add_node("action_get_order", lambda state: action_get_order(state, tenant))
     graph.add_node("action_open_ticket", lambda state: action_open_ticket(state, tenant))
     graph.add_node("handoff", lambda state: handoff(state, tenant))
     graph.add_node("support_respond", lambda state: support_respond(state, tenant))
@@ -22,14 +26,14 @@ def _build_graph(tenant):
         "support_decide",
         lambda state: state.next_step,
         {
-            "action_lookup_order": "action_lookup_order",
+            "action_get_order": "action_get_order",
             "action_open_ticket": "action_open_ticket",
             "handoff": "handoff",
             "support_respond": "support_respond",
         },
     )
 
-    graph.add_edge("action_lookup_order", "support_decide")
+    graph.add_edge("action_get_order", "support_respond")
     graph.add_edge("action_open_ticket", "support_respond")
     graph.add_edge("handoff", END)
     graph.add_edge("support_respond", END)

@@ -1,19 +1,19 @@
-"""Supabase database client for Nouvaris Agents V2."""
+"""Supabase database client for Nouvaris Agents V2.
+
+Uses pure REST client instead of supabase-py SDK to avoid
+dependency issues with pyroaring on Windows.
+"""
 
 import os
 from functools import lru_cache
 
-from supabase import Client, create_client
+from app.core.supabase_client import SupabaseClient, get_supabase
 
 
 @lru_cache(maxsize=1)
-def get_client() -> Client:
+def get_client() -> SupabaseClient:
     """Get a cached Supabase client instance."""
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
-    return create_client(url, key)
+    return get_supabase()
 
 
 # =============================================================================
@@ -49,11 +49,6 @@ def resolve_tenant_uuid(tenant_id_or_name: str) -> str:
     # Try to find tenant by name
     client = get_client()
     result = client.table("tenants").select("id").eq("name", tenant_id_or_name).execute()
-    if result.data:
-        return result.data[0]["id"]
-    
-    # Try case-insensitive match
-    result = client.table("tenants").select("id").ilike("name", tenant_id_or_name).execute()
     if result.data:
         return result.data[0]["id"]
     
@@ -216,7 +211,7 @@ def get_conversation_history(
         client.table("messages")
         .select("*")
         .eq("conversation_id", conversation_id)
-        .order("created_at", desc=False)
+        .order("created_at", ascending=True)
         .limit(limit)
         .execute()
     )
@@ -256,15 +251,19 @@ def get_orders_by_email(tenant_id: str, email: str) -> list[dict]:
         return []
 
     user_ids = [u["id"] for u in users.data]
-    result = (
-        client.table("orders")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .in_("user_id", user_ids)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data
+    # For now, just get orders for the first user found
+    # TODO: Support IN clause for multiple user IDs
+    if user_ids:
+        result = (
+            client.table("orders")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user_ids[0])
+            .order("created_at", ascending=False)
+            .execute()
+        )
+        return result.data
+    return []
 
 
 # =============================================================================
