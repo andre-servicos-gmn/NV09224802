@@ -137,3 +137,21 @@ Nenhuma mudança é válida sem passar pelos testes de diálogo:
 - persistência de contexto
 
 Se o comportamento divergir deste contrato, o código está errado.
+
+---
+
+## 9. Regras de Grounding (Realidade)
+
+1. **Nunca inventar dados**
+   - Se a API não retornar tracking, não invente "em breve".
+   - Se não houver SLA, não invente "2 dias".
+   - Status desconhecido = avise que não sabe.
+
+2. **Terminologia de Identificação**
+   - **order_number** (ex: 1001): O único número que pedimos ao cliente.
+   - **shopify_order_id** (ex: 58327...): Uso estritamente interno (metadata). Nunca expor ou pedir.
+
+3. **Fallback Híbrido**
+   - Sempre confiar primeiro no `order_number` informado.
+   - Fallback para e-mail (`state.customer_email`) apenas se explícito no estado.
+   - Nunca tentar adivinhar e-mails.

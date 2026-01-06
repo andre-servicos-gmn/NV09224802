@@ -61,6 +61,10 @@ class TableQuery:
         self._filters: list[tuple[str, str, Any]] = []
         self._select_cols = "*"
         self._single = False
+        self._order_by: Optional[tuple[str, bool]] = None
+        self._limit_val: Optional[int] = None
+        self._insert_data: Optional[dict] = None
+        self._update_data: Optional[dict] = None
     
     def select(self, columns: str = "*") -> "TableQuery":
         """Define colunas a selecionar."""
@@ -72,28 +76,103 @@ class TableQuery:
         self._filters.append((column, "eq", value))
         return self
     
+    def ilike(self, column: str, value: Any) -> "TableQuery":
+        """Adiciona filtro case-insensitive like."""
+        self._filters.append((column, "ilike", value))
+        return self
+    
+    def order(self, column: str, ascending: bool = True) -> "TableQuery":
+        """Define ordenação."""
+        self._order_by = (column, ascending)
+        return self
+    
+    def limit(self, count: int) -> "TableQuery":
+        """Define limite de resultados."""
+        self._limit_val = count
+        return self
+    
     def single(self) -> "TableQuery":
         """Indica que espera apenas um resultado."""
         self._single = True
         return self
     
+    def insert(self, data: dict | list[dict]) -> "TableQuery":
+        """Prepara inserção de dados."""
+        self._insert_data = data
+        return self
+    
+    def update(self, data: dict) -> "TableQuery":
+        """Prepara atualização de dados."""
+        self._update_data = data
+        return self
+    
     def execute(self) -> "QueryResponse":
-        """Executa a query."""
+        """Executa a query (SELECT, INSERT ou UPDATE)."""
+        if self._insert_data is not None:
+            return self._execute_insert()
+        elif self._update_data is not None:
+            return self._execute_update()
+        else:
+            return self._execute_select()
+    
+    def _execute_select(self) -> "QueryResponse":
+        """Executa SELECT."""
         url = f"{self.client.url}/rest/v1/{self.table_name}"
         
-        params = {"select": self._select_cols}
+        params: dict[str, str] = {"select": self._select_cols}
         for col, op, val in self._filters:
             params[col] = f"{op}.{val}"
         
+        if self._order_by:
+            col, asc = self._order_by
+            params["order"] = f"{col}.{'asc' if asc else 'desc'}"
+        
+        # Use limit=1 for single() instead of special Accept header
+        if self._single and not self._limit_val:
+            params["limit"] = "1"
+        elif self._limit_val:
+            params["limit"] = str(self._limit_val)
+        
         headers = dict(self.client.headers)
-        if self._single:
-            headers["Accept"] = "application/vnd.pgrst.object+json"
         
         response = httpx.get(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
         
         data = response.json()
-        return QueryResponse(data if self._single else data)
+        # Pass raw data to QueryResponse, which now handles dict->list conversion
+        return QueryResponse(data)
+    
+    def _execute_insert(self) -> "QueryResponse":
+        """Executa INSERT."""
+        url = f"{self.client.url}/rest/v1/{self.table_name}"
+        
+        headers = dict(self.client.headers)
+        
+        data = self._insert_data
+        if not isinstance(data, list):
+            data = [data]
+        
+        response = httpx.post(url, json=data, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        return QueryResponse(result)
+    
+    def _execute_update(self) -> "QueryResponse":
+        """Executa UPDATE."""
+        url = f"{self.client.url}/rest/v1/{self.table_name}"
+        
+        params: dict[str, str] = {}
+        for col, op, val in self._filters:
+            params[col] = f"{op}.{val}"
+        
+        headers = dict(self.client.headers)
+        
+        response = httpx.patch(url, params=params, json=self._update_data, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        return QueryResponse(result)
     
     def upsert(self, data: dict, on_conflict: Optional[str] = None) -> "TableQuery":
         """Prepara upsert."""
@@ -123,7 +202,12 @@ class QueryResponse:
     """Resposta de uma query Supabase."""
     
     def __init__(self, data: Any) -> None:
-        self.data = data
+        if isinstance(data, list):
+            self.data = data
+        elif isinstance(data, dict):
+            self.data = [data]
+        else:
+            self.data = []
 
 
 @lru_cache(maxsize=1)
