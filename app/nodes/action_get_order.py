@@ -83,8 +83,8 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
             state.order_id = str(order.get("order_number"))
 
         # Extract tracking
-        # extract_tracking returns (tracking_url, tracking_number)
-        tracking_url, tracking_number = client.extract_tracking(order)
+        # extract_tracking returns (tracking_number, tracking_url)
+        tracking_number, tracking_url = client.extract_tracking(order)
         
         state.tracking_url = tracking_url
         if tracking_number:
