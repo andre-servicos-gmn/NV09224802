@@ -26,11 +26,76 @@ def get_model_name() -> str:
 # =============================================================================
 
 
-def get_knowledge_context(tenant_id: str, categories: list[str] | None = None) -> str:
-    """Fetch relevant knowledge base entries for context."""
+def _extract_metadata_content(metadata: dict | list | str | None) -> str:
+    """Extract readable content from metadata field.
+    
+    metadata can be:
+    - JSON string: parse first then extract
+    - dict: {"title": "...", "content": "...", "keywords": [...]}
+    - list: ["info1", "info2", ...]
+    - str: direct text content
+    """
+    import json
+    
+    if not metadata:
+        return ""
+    
+    # If it's a JSON string, parse it first
+    if isinstance(metadata, str):
+        try:
+            parsed = json.loads(metadata)
+            if isinstance(parsed, (dict, list)):
+                return _extract_metadata_content(parsed)  # Recurse with parsed data
+        except json.JSONDecodeError:
+            return metadata  # Return as-is if not valid JSON
+    
+    if isinstance(metadata, list):
+        return " | ".join(str(item) for item in metadata if item)
+    
+    if isinstance(metadata, dict):
+        parts = []
+        # Extract common fields from store manual format
+        if "title" in metadata:
+            parts.append(f"{metadata['title']}:")
+        if "content" in metadata:
+            parts.append(str(metadata["content"]))
+        if "topic" in metadata:
+            parts.append(f"Tópico: {metadata['topic']}")
+        if "info" in metadata:
+            parts.append(str(metadata["info"]))
+        if "text" in metadata:
+            parts.append(str(metadata["text"]))
+        # If none of the above, dump all non-keyword values
+        if not parts:
+            parts = [str(v) for k, v in metadata.items() if k not in ("keywords", "source") and v]
+        return " ".join(parts)
+    
+    return str(metadata)
+
+
+def get_knowledge_context(
+    tenant_id: str, 
+    categories: list[str] | None = None,
+    user_message: str | None = None,
+) -> str:
+    """Fetch relevant knowledge base entries for RAG context.
+    
+    Uses semantic search when user_message is provided (better relevance).
+    Knowledge is stored in the metadata column as a store manual.
+    """
+    from app.core.database import search_knowledge_base_semantic
+    
     try:
         tenant_uuid = resolve_tenant_uuid(tenant_id)
-        if categories:
+        
+        # Use semantic search if we have the user's message
+        if user_message:
+            all_results = search_knowledge_base_semantic(
+                tenant_uuid, 
+                query=user_message, 
+                limit=5
+            )
+        elif categories:
             all_results = []
             for cat in categories:
                 results = search_knowledge_base_simple(tenant_uuid, category=cat, limit=3)
@@ -39,18 +104,26 @@ def get_knowledge_context(tenant_id: str, categories: list[str] | None = None) -
             all_results = search_knowledge_base_simple(tenant_uuid, limit=10)
         
         if not all_results:
-            return ""
+            return "[Manual da Loja]\nNenhuma informação encontrada na base de dados."
         
-        context_lines = ["[Informações da Base de Conhecimento]"]
+        context_lines = ["[Manual da Loja]"]
+        context_lines.append("Use APENAS as informações abaixo para responder:")
+        context_lines.append("")
+        
         for item in all_results:
-            q = item.get("question", "")
-            a = item.get("answer", "")
-            if q and a:
-                context_lines.append(f"- {q}: {a}")
+            category = item.get("category", "geral")
+            metadata = item.get("metadata")
+            content = _extract_metadata_content(metadata)
+            if content:
+                context_lines.append(f"[{category.upper()}] {content}")
+                context_lines.append("")
         
         return "\n".join(context_lines)
-    except Exception:
-        return ""
+    except Exception as e:
+        import os
+        if os.getenv("DEBUG"):
+            print(f"[RAG Error] {e}")
+        return "[Manual da Loja]\nErro ao buscar informações. Diga que vai verificar com a equipe."
 
 
 # =============================================================================
@@ -58,32 +131,36 @@ def get_knowledge_context(tenant_id: str, categories: list[str] | None = None) -
 # =============================================================================
 
 
-BASE_PERSONA = """Você é Ana, assistente virtual de atendimento ao cliente.
+def build_base_persona(tenant: TenantConfig) -> str:
+    """Build base persona dynamically using tenant.brand_voice from Supabase.
+    
+    The brand_voice is a free-form text defined by the client in Supabase.
+    Examples:
+        - "profissional e direto ao ponto"
+        - "simpático e acolhedor, usando emojis moderadamente"
+        - "informal e descontraído, como um amigo próximo"
+    """
+    brand_voice = tenant.brand_voice or "profissional e cordial"
+    
+    return f"""Você é Ana, assistente virtual de atendimento ao cliente da {tenant.name}.
 
-PERSONALIDADE:
-- Profissional, cordial e eficiente
-- Educada e prestativa, mas direta ao ponto
-- Transmite confiança e competência
-- Mostra empatia quando o cliente tem problemas
+TOM E ESTILO (definido pelo cliente):
+{brand_voice}
 
-ESTILO DE COMUNICAÇÃO:
-- Tom equilibrado: profissional mas acolhedor
-- Frases claras e objetivas
-- Evita gírias e expressões muito informais
-- Pode usar "por favor", "com certeza", "claro"
-- Sem emojis (ou no máximo 1 quando apropriado)
-
-REGRAS:
+REGRAS GERAIS:
+- Adapte seu tom exatamente conforme descrito acima
 - NUNCA use markdown (sem **, ##, -, etc)
 - URLs devem aparecer sozinhas em uma linha
 - Máximo 3 frases por resposta
 - Seja direta e resolva o problema rapidamente
-- Se não souber, diga que vai verificar com a equipe"""
+- Se não souber, diga que vai verificar com a equipe
+- Mostra empatia quando o cliente tem problemas"""
 
 
 def build_sales_prompt(tenant: TenantConfig) -> str:
     """Build system prompt for Sales agent."""
-    return f"""{BASE_PERSONA}
+    base = build_base_persona(tenant)
+    return f"""{base}
 
 CONTEXTO - VENDAS:
 Você está ajudando clientes a comprar produtos da {tenant.name}.
@@ -103,7 +180,8 @@ EXEMPLOS DE RESPOSTAS:
 
 def build_support_prompt(tenant: TenantConfig) -> str:
     """Build system prompt for Support agent."""
-    return f"""{BASE_PERSONA}
+    base = build_base_persona(tenant)
+    return f"""{base}
 
 CONTEXTO - SUPORTE:
 Você está dando suporte pós-venda para clientes da {tenant.name}.
@@ -122,26 +200,41 @@ EXEMPLOS DE RESPOSTAS:
 
 
 def build_store_qa_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Store Q&A agent."""
-    return f"""{BASE_PERSONA}
+    """Build system prompt for Store Q&A agent with strict RAG grounding."""
+    base = build_base_persona(tenant)
+    return f"""{base}
 
 CONTEXTO - DÚVIDAS DA LOJA:
 Você está respondendo dúvidas sobre políticas e informações da {tenant.name}.
 
+=== REGRAS ABSOLUTAS DE GROUNDING (NUNCA VIOLAR) ===
+
+1. NUNCA INVENTE INFORMAÇÕES
+   - Você SÓ pode usar informações que estão no [Manual da Loja] fornecido
+   - Se a informação NÃO está no manual, diga: "Não tenho essa informação no momento. Posso verificar com a equipe e retornar."
+   - NUNCA invente prazos, preços, políticas ou qualquer dado específico
+
+2. SEMPRE CONFIRME NO MANUAL DA LOJA
+   - Antes de responder qualquer dúvida, verifique se a resposta está no manual
+   - Se a pergunta do cliente não tem resposta no manual, NÃO INVENTE
+   - Use APENAS os dados fornecidos, nunca conhecimento externo
+
+3. FRASES PROIBIDAS (NUNCA USE SE NÃO ESTIVER NO MANUAL):
+   - "O prazo é de X dias" (só se estiver no manual)
+   - "O frete custa R$X" (só se estiver no manual)
+   - "Aceitamos..." (só liste o que está no manual)
+   - "A política é..." (só se estiver no manual)
+
+4. QUANDO NÃO SOUBER:
+   - Diga: "Não tenho essa informação no momento. Posso verificar com a equipe e retornar."
+   - Ou: "Para informações mais detalhadas sobre isso, nossa equipe pode ajudar melhor."
+
+=== FIM DAS REGRAS ===
+
 COMPORTAMENTO:
-- Responda dúvidas sobre frete, pagamento e trocas de forma clara e objetiva
-- Use as informações da base de conhecimento
-- Se não tiver a informação, informe que vai verificar com a equipe
-- Ofereça informações adicionais quando relevante
-
-EXEMPLOS DE RESPOSTAS:
-"O prazo de entrega varia conforme a região e será informado no checkout."
-"Para trocas, você tem 30 dias. Enviaremos as instruções por email."
-"Aceitamos cartão de crédito, PIX e boleto bancário."
-
-REGRA IMPORTANTE:
-- NUNCA invente prazos ou SLAs específicos (ex: '3 a 7 dias úteis')
-- Use apenas informações da base de conhecimento ou diga que vai verificar
+- Seja clara e objetiva
+- Se o manual tiver a resposta, use exatamente as informações dele
+- Se não tiver, admita e ofereça verificar
 """
 
 
@@ -241,7 +334,8 @@ def _build_context_prompt(
         lines.append("- Use: 'Para verificar seu pedido, preciso do número do pedido ou seu email.'")
     
     # CRITICAL: Action-Respond alignment per AGENT.md contract
-    if state.last_action and state.last_action_success is False:
+    # Only applies to support domain which has real actions (lookup order, etc.)
+    if state.domain == "support" and state.last_action and state.last_action_success is False:
         lines.append("")
         lines.append("ATENÇÃO: A última ação FALHOU.")
         lines.append("- NÃO diga que 'vou verificar' ou 'encontrei' se a ação falhou")
@@ -277,8 +371,20 @@ def generate_humanized_response(
     Raises:
         Exception: If LLM call fails - no fallback responses
     """
-    # Get knowledge context
-    knowledge_context = get_knowledge_context(tenant.tenant_id, categories)
+    # Get knowledge context - use semantic search for store_qa
+    user_msg = state.last_user_message if domain == "store_qa" else None
+    knowledge_context = get_knowledge_context(
+        tenant.tenant_id, 
+        categories,
+        user_message=user_msg
+    )
+    
+    # Debug: show knowledge context
+    if os.getenv("DEBUG"):
+        print(f"[RAG] Domain: {domain}")
+        print(f"[RAG] Categories: {categories}")
+        print(f"[RAG] User message for search: {user_msg}")
+        print(f"[RAG] Knowledge context (first 300 chars): {knowledge_context[:300]}...")
     
     # Select system prompt based on domain
     if domain == "sales":
