@@ -1,128 +1,112 @@
-"""Multi-tenant configuration with Supabase integration.
+"""
+Módulo de multi-tenancy do Nouvaris Agents V2.
 
-Tenants are loaded from Supabase database. The brand_voice field is a free-form
-text that the client defines to describe the exact tone the agent should use.
+Gerencia configurações por tenant, buscando dados do Supabase.
+Em runtime, tokens e configurações vêm SEMPRE do banco de dados.
 """
 
-import os
-from functools import lru_cache
-from pathlib import Path
+from typing import Optional
 
-import yaml
 from pydantic import BaseModel
 
-from app.core.database import get_client
+from app.core.supabase_client import get_supabase
 
 
 class TenantConfig(BaseModel):
-    """Tenant configuration loaded from Supabase or YAML fallback."""
+    """Configuração de um tenant."""
+    
     tenant_id: str
     name: str
-    store_domain: str = ""
+    store_domain: str
+    shopify_access_token: str
+    shopify_api_version: str = "2024-01"
     default_link_strategy: str = "permalink"
-    brand_voice: str = "profissional e cordial"  # Free-form text from client
-    handoff_message: str = "Vou te encaminhar para um atendente."
-    # Additional settings from Supabase JSONB
-    settings: dict = {}
-
-
-def get_tenant_from_db(tenant_id: str) -> TenantConfig | None:
-    """Load tenant configuration from Supabase database.
-    
-    The brand_voice field is free-form text defined by the client.
-    Examples:
-        - "profissional e direto ao ponto"
-        - "simpático e acolhedor, usando emojis"
-        - "informal e descontraído, como um amigo"
-    """
-    try:
-        client = get_client()
-        
-        # Try by UUID first
-        if "-" in tenant_id and len(tenant_id) == 36:
-            result = client.table("tenants").select("*").eq("id", tenant_id).execute()
-        else:
-            # Try by name
-            result = client.table("tenants").select("*").eq("name", tenant_id).execute()
-            if not result.data:
-                # Case-insensitive match
-                result = client.table("tenants").select("*").ilike("name", tenant_id).execute()
-        
-        if not result.data:
-            return None
-        
-        tenant_data = result.data[0]
-        return TenantConfig(
-            tenant_id=tenant_data.get("id", tenant_id),
-            name=tenant_data.get("name", tenant_id),
-            store_domain=tenant_data.get("store_domain", ""),
-            default_link_strategy=tenant_data.get("default_link_strategy", "permalink"),
-            brand_voice=tenant_data.get("brand_voice", "profissional e cordial"),
-            handoff_message=tenant_data.get("handoff_message", "Vou te encaminhar para um atendente."),
-            settings=tenant_data.get("settings") or {},
-        )
-    except Exception as e:
-        if os.getenv("DEBUG"):
-            print(f"[Tenant DB Error] {e}")
-        return None
+    brand_voice: str = "curto_humano"
+    handoff_message: str = "Vou te colocar com um atendente humano..."
+    active: bool = True
 
 
 class TenantRegistry:
-    """Registry for tenant configurations with Supabase + YAML fallback."""
+    """
+    Registro de tenants que busca configurações do Supabase.
     
-    def __init__(self, path: str | Path = "tenants.yaml") -> None:
-        self.path = Path(path)
-        self._yaml_tenants = self._load_yaml()
-
-    def _load_yaml(self) -> dict[str, TenantConfig]:
-        """Load tenants from YAML as fallback."""
-        if not self.path.exists():
-            return {}
-        try:
-            data = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
-            tenants = data.get("tenants", {})
-            return {
-                key: TenantConfig(
-                    tenant_id=value.get("tenant_id", key),
-                    name=value.get("name", key),
-                    store_domain=value.get("store_domain", ""),
-                    default_link_strategy=value.get("default_link_strategy", "permalink"),
-                    brand_voice=value.get("brand_voice", "profissional e cordial"),
-                    handoff_message=value.get("handoff_message", "Vou te encaminhar para um atendente."),
-                )
-                for key, value in tenants.items()
-            }
-        except Exception:
-            return {}
-
-    @lru_cache(maxsize=100)
-    def get(self, tenant_id: str) -> TenantConfig:
-        """Get tenant config from Supabase, with YAML fallback.
-        
-        Priority:
-        1. Supabase database (primary source)
-        2. YAML file (fallback for offline/dev)
-        3. Default demo config (last resort)
+    Em runtime, todas as configurações (incluindo tokens Shopify)
+    são buscadas diretamente do banco de dados Supabase.
+    
+    NÃO use variáveis de ambiente para tokens em runtime.
+    """
+    
+    def __init__(self) -> None:
+        """Inicializa o registry com cliente Supabase."""
+        self._supabase = get_supabase()
+        self._cache: dict[str, TenantConfig] = {}
+    
+    def get(self, tenant_id: str, use_cache: bool = True) -> TenantConfig:
         """
-        # Try Supabase first
-        db_tenant = get_tenant_from_db(tenant_id)
-        if db_tenant:
-            return db_tenant
+        Busca configuração de um tenant do Supabase.
         
-        # Fallback to YAML
-        yaml_tenant = self._yaml_tenants.get(tenant_id)
-        if yaml_tenant:
-            return yaml_tenant
+        Args:
+            tenant_id: ID único do tenant
+            use_cache: Se True, usa cache em memória (default: True)
+            
+        Returns:
+            TenantConfig com todas as configurações do tenant
+            
+        Raises:
+            ValueError: Se tenant não existir ou estiver inativo
+        """
+        # Check cache first
+        if use_cache and tenant_id in self._cache:
+            return self._cache[tenant_id]
         
-        # Default demo tenant
-        return TenantConfig(
-            tenant_id="demo",
-            name="Demo Store",
-            store_domain="",
-            brand_voice="profissional e cordial",
-            handoff_message="Vou te encaminhar para um atendente.",
+        # Fetch from Supabase
+        try:
+            response = (
+                self._supabase.table("tenants")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .single()
+                .execute()
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to fetch tenant '{tenant_id}': {e}") from e
+        
+        if not response.data:
+            raise ValueError(f"Tenant not found: {tenant_id}")
+        
+        # REST client always returns a list, get first element
+        data = response.data[0] if isinstance(response.data, list) else response.data
+        
+        # Check if tenant is active
+        if not data.get("active", True):
+            raise ValueError(f"Tenant is inactive: {tenant_id}")
+        
+        # Convert to TenantConfig
+        tenant = TenantConfig(
+            tenant_id=data["tenant_id"],
+            name=data.get("name", tenant_id),
+            store_domain=data["store_domain"],
+            shopify_access_token=data["shopify_access_token"],
+            shopify_api_version=data.get("shopify_api_version", "2024-01"),
+            default_link_strategy=data.get("default_link_strategy", "permalink"),
+            brand_voice=data.get("brand_voice", "curto_humano"),
+            handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),
+            active=data.get("active", True),
         )
+        
+        # Cache for subsequent requests
+        self._cache[tenant_id] = tenant
+        
+        return tenant
     
-    def clear_cache(self) -> None:
-        """Clear the tenant cache."""
-        self.get.cache_clear()
+    def clear_cache(self, tenant_id: Optional[str] = None) -> None:
+        """
+        Limpa cache de tenants.
+        
+        Args:
+            tenant_id: Se fornecido, limpa apenas este tenant. Se None, limpa todo o cache.
+        """
+        if tenant_id:
+            self._cache.pop(tenant_id, None)
+        else:
+            self._cache.clear()
