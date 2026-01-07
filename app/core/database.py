@@ -271,16 +271,72 @@ def get_orders_by_email(tenant_id: str, email: str) -> list[dict]:
 # =============================================================================
 
 
+def search_knowledge_base_semantic(
+    tenant_id: str,
+    query: str,
+    limit: int = 5,
+    min_score: float = 0.3,
+) -> list[dict]:
+    """Semantic search in knowledge base using embeddings.
+    
+    Uses OpenAI embeddings and pgvector cosine similarity.
+    Based on working RAG implementation pattern.
+    """
+    import os
+    try:
+        from langchain_openai import OpenAIEmbeddings
+        
+        # Generate embedding for the query
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        query_embedding = embeddings.embed_query(query)
+        
+        # Format vector as string for SQL
+        vec_str = "[" + ",".join([str(x) for x in query_embedding]) + "]"
+        
+        if os.getenv("DEBUG"):
+            print(f"[RAG] Query: {query[:50]}...")
+            print(f"[RAG] Vector length: {len(query_embedding)}")
+        
+        # Direct SQL query with cosine similarity (like working implementation)
+        client = get_client()
+        result = client.rpc(
+            "match_knowledge_base",
+            {
+                "query_embedding": vec_str,
+                "p_tenant_id": tenant_id,
+                "p_min_score": min_score,
+                "p_limit": limit,
+            }
+        ).execute()
+        
+        if os.getenv("DEBUG"):
+            print(f"[RAG] Results: {len(result.data) if result.data else 0}")
+        
+        if result.data:
+            return result.data
+        
+        # Fallback to simple search if no semantic results
+        if os.getenv("DEBUG"):
+            print("[RAG] Falling back to simple search")
+        return search_knowledge_base_simple(tenant_id, limit=limit)
+        
+    except Exception as e:
+        if os.getenv("DEBUG"):
+            print(f"[Semantic Search Error] {e}")
+        # Fallback to simple search on any error
+        return search_knowledge_base_simple(tenant_id, limit=limit)
+
+
 def search_knowledge_base_simple(
     tenant_id: str,
     category: str | None = None,
     limit: int = 5,
 ) -> list[dict]:
-    """Simple search in knowledge base without embeddings."""
+    """Simple search in knowledge base - uses metadata as store manual."""
     client = get_client()
     query = (
         client.table("knowledge_base")
-        .select("id, category, question, answer")
+        .select("id, category, metadata")
         .eq("tenant_id", tenant_id)
         .eq("is_active", True)
     )
