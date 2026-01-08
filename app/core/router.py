@@ -13,6 +13,7 @@ from .constants import (
     INTENT_ORDER_STATUS,
     INTENT_ORDER_TRACKING,
     INTENT_PAYMENT_QUESTION,
+    INTENT_MEDIA_UNSUPPORTED,
     INTENT_PRODUCT_LINK,
     INTENT_PROVIDE_EMAIL,
     INTENT_PROVIDE_ORDER_ID,
@@ -44,7 +45,9 @@ class RouterDecision:
     sentiment_score: float
     needs_handoff: bool
     handoff_reason: str | None
+    handoff_reason: str | None
     used_sentiment_llm: bool
+    token_usage: dict | None = None
 
 
 def _normalize(text: str) -> str:
@@ -217,6 +220,22 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
         if cached:
             return cached
 
+    # Media Check heuristic
+    if message.strip().upper().startswith(("[AUDIO]", "[IMAGE]", "[VIDEO]")):
+        return RouterDecision(
+            domain="general",
+            intent=INTENT_MEDIA_UNSUPPORTED,
+            entities={},
+            confidence=1.0,
+            used_fallback=False,
+            reason="heuristic_media",
+            sentiment_level="calm",
+            sentiment_score=0.0,
+            needs_handoff=False,
+            handoff_reason=None,
+            used_sentiment_llm=False,
+        )
+
     sentiment = analyze_sentiment_llm(message)
     used_sentiment_llm = True
 
@@ -246,6 +265,7 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
                 needs_handoff=sentiment["needs_handoff"],
                 handoff_reason=sentiment["handoff_reason"],
                 used_sentiment_llm=used_sentiment_llm,
+                token_usage=result.token_usage,
             )
             _cache_set(context, message, decision)
             return decision
