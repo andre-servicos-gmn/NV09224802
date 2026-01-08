@@ -1,4 +1,4 @@
-"""Store Q&A response generation using RAG from Supabase."""
+"""Store Q&A response generation using RAG from Supabase + memory context."""
 
 import os
 import json
@@ -50,28 +50,71 @@ def _build_knowledge_context(results: list) -> str:
     lines.append("Use APENAS as informações abaixo para responder:")
     lines.append("")
     
-    for item in results:
+    # Debug: log first item keys
+    if os.getenv("DEBUG") and results:
+        first_item = results[0]
+        print(f"[RAG] First result keys: {list(first_item.keys())}")
+    
+    for idx, item in enumerate(results):
         category = item.get("category", "geral")
+        content = ""
+        
+        # Try multiple formats
         metadata = item.get("metadata")
-        content = _extract_metadata_content(metadata)
-        if content:
+        if metadata:
+            content = _extract_metadata_content(metadata)
+        if not content:
+            content = item.get("content") or item.get("text") or item.get("document") or ""
+        if not content:
+            fallback_item = {k: v for k, v in item.items() if k != "embedding"}
+            content = str(fallback_item)[:500]
+        
+        if content and content.strip():
             lines.append(f"[{category.upper()}] {content}")
             lines.append("")
+            if os.getenv("DEBUG") and idx == 0:
+                print(f"[RAG] Extracted content: {content[:120]}...")
     
     return "\n".join(lines)
 
 
-def store_qa_respond(state: ConversationState, tenant: TenantConfig) -> ConversationState:
-    """Generate Store Q&A response using RAG from Supabase.
+def _build_memory_context(state: ConversationState) -> str:
+    """Build memory context from state for human-like responses."""
+    lines = []
     
-    This is the ONLY place where store knowledge is fetched.
-    All information comes from the Supabase knowledge_base via semantic search.
+    if state.conversation_summary:
+        lines.append("[Resumo da Conversa]")
+        lines.append(state.conversation_summary)
+        lines.append("")
+    
+    if state.facts:
+        lines.append("[Fatos Conhecidos sobre o Cliente]")
+        for key, value in state.facts.items():
+            if value:
+                lines.append(f"- {key}: {value}")
+        lines.append("")
+    
+    if state.missing_info_needed:
+        lines.append("[Info que Precisamos Perguntar]")
+        for info in state.missing_info_needed[:1]:
+            lines.append(f"- {info}")
+        lines.append("")
+    
+    return "\n".join(lines) if lines else ""
+
+
+def store_qa_respond(state: ConversationState, tenant: TenantConfig) -> ConversationState:
+    """Generate Store Q&A response using RAG + memory context.
+    
+    Handles two strategies:
+    - ask_one_missing: Ask for ONE missing piece of info
+    - rag_answer: Use RAG to answer the question
     """
     
-    # Get user message for semantic search
     user_message = state.last_user_message or ""
     
     if os.getenv("DEBUG"):
+        print(f"[store_qa_respond] Strategy: {state.last_strategy}")
         print(f"[store_qa_respond] User message: {user_message}")
     
     # Semantic search in Supabase knowledge_base
@@ -86,28 +129,50 @@ def store_qa_respond(state: ConversationState, tenant: TenantConfig) -> Conversa
         if os.getenv("DEBUG"):
             print(f"[store_qa_respond] RAG results: {len(results) if results else 0}")
         
-        state.last_action = "rag_search"
-        state.last_action_success = bool(results)
-        
     except Exception as e:
         if os.getenv("DEBUG"):
             print(f"[store_qa_respond] RAG error: {e}")
         results = []
-        state.last_action = "rag_search"
-        state.last_action_success = False
     
-    # Build knowledge context from results
     knowledge_context = _build_knowledge_context(results)
+    memory_context = _build_memory_context(state)
     
     if os.getenv("DEBUG"):
-        print(f"[store_qa_respond] Context: {knowledge_context[:200]}...")
+        print(f"[store_qa_respond] Memory context: {memory_context[:200]}..." if memory_context else "[store_qa_respond] No memory context")
     
-    # Build system prompt
     system_prompt = build_store_qa_prompt(tenant)
     
-    # Build user prompt with RAG context
-    user_prompt = f"""[Mensagem do Cliente]
+    # Build prompt based on strategy
+    if state.last_strategy == "ask_one_missing":
+        missing_info = state.missing_info_needed[0] if state.missing_info_needed else "mais informações"
+        
+        user_prompt = f"""[Mensagem do Cliente]
 {user_message or '(sem mensagem)'}
+
+{memory_context}
+
+{knowledge_context}
+
+[Estratégia: Perguntar Info Faltante]
+Você precisa perguntar: {missing_info}
+
+[Instruções]
+- Primeiro, reconheça o que o cliente disse
+- Depois, faça UMA pergunta natural sobre: {missing_info}
+- NÃO pergunte algo que já está nos fatos conhecidos
+- Seja empático e humano
+- Máximo 3 frases, sem markdown
+
+Exemplo: "Entendi. Você pagou via Pix e ainda não apareceu o rastreio. Pra eu verificar certinho, me manda o número do pedido ou o e-mail da compra?"
+"""
+        state.repeat_count += 1
+        
+    else:
+        # Strategy: rag_answer (default)
+        user_prompt = f"""[Mensagem do Cliente]
+{user_message or '(sem mensagem)'}
+
+{memory_context}
 
 [Intenção Detectada]
 {state.intent}
@@ -115,9 +180,13 @@ def store_qa_respond(state: ConversationState, tenant: TenantConfig) -> Conversa
 {knowledge_context}
 
 [Instruções]
-Responda à dúvida do cliente usando APENAS as informações do Manual da Loja acima.
-Se a informação não estiver no manual, diga: "Não tenho essa informação no momento. Posso verificar com a equipe e retornar."
-Máximo 3 frases, sem markdown.
+- Use o resumo da conversa para dar contexto
+- Responda usando APENAS informações do Manual da Loja
+- Se não estiver no manual, diga: "Não tenho essa informação no momento. Posso verificar com a equipe."
+- Use os fatos conhecidos para personalizar (ex: "sobre seu pedido 1234...")
+- NÃO invente prazos, políticas ou status
+- Copie exatamente números e prazos do manual (não converta dias↔horas)
+- Máximo 3 frases, sem markdown
 """
     
     # Call LLM
@@ -125,11 +194,16 @@ Máximo 3 frases, sem markdown.
     if os.getenv("DEBUG"):
         print(f"[store_qa_respond] Using model: {model}")
     
-    llm = ChatOpenAI(model=model, temperature=0.7)
+    llm = ChatOpenAI(model=model, temperature=0.2)
     result = llm.invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
     ])
     
-    state.last_bot_message = (result.content or "").strip()
+    response = (result.content or "").strip()
+    state.last_bot_message = response
+    state.last_action = "generate_response"
+    state.last_action_success = bool(response)
+    
     return state
+
