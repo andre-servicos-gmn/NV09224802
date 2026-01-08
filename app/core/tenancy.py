@@ -17,12 +17,13 @@ class TenantConfig(BaseModel):
     
     tenant_id: str
     name: str
-    store_domain: str
-    shopify_access_token: str
+    store_domain: str | None = None
+    shopify_access_token: str | None = None
     shopify_api_version: str = "2024-01"
     default_link_strategy: str = "permalink"
     brand_voice: str = "curto_humano"
     handoff_message: str = "Vou te colocar com um atendente humano..."
+    store_niche: str | None = None
     active: bool = True
 
 
@@ -46,7 +47,7 @@ class TenantRegistry:
         Busca configuração de um tenant do Supabase.
         
         Args:
-            tenant_id: ID único do tenant
+            tenant_id: ID único do tenant ou nome do tenant
             use_cache: Se True, usa cache em memória (default: True)
             
         Returns:
@@ -55,11 +56,14 @@ class TenantRegistry:
         Raises:
             ValueError: Se tenant não existir ou estiver inativo
         """
-        # Check cache first
+        import os
+        
+        # Check cache first (by both id and name)
         if use_cache and tenant_id in self._cache:
             return self._cache[tenant_id]
         
-        # Fetch from Supabase
+        # Fetch from Supabase - try by tenant_id first
+        data = None
         try:
             response = (
                 self._supabase.table("tenants")
@@ -68,34 +72,63 @@ class TenantRegistry:
                 .single()
                 .execute()
             )
-        except Exception as e:
-            raise ValueError(f"Failed to fetch tenant '{tenant_id}': {e}") from e
+            if response.data:
+                data = response.data[0] if isinstance(response.data, list) else response.data
+        except Exception:
+            pass
         
-        if not response.data:
+        # If not found by tenant_id, try by name
+        if not data:
+            try:
+                response = (
+                    self._supabase.table("tenants")
+                    .select("*")
+                    .ilike("name", tenant_id)
+                    .single()
+                    .execute()
+                )
+                if response.data:
+                    data = response.data[0] if isinstance(response.data, list) else response.data
+            except Exception:
+                pass
+        
+        if not data:
             raise ValueError(f"Tenant not found: {tenant_id}")
         
-        # REST client always returns a list, get first element
-        data = response.data[0] if isinstance(response.data, list) else response.data
+        if os.getenv("DEBUG"):
+            print(f"[Tenant] Keys from Supabase: {list(data.keys())}")
         
         # Check if tenant is active
         if not data.get("active", True):
             raise ValueError(f"Tenant is inactive: {tenant_id}")
         
+        # Handle different column name variations from Supabase
+        actual_tenant_id = data.get("tenant_id") or data.get("id")
+        actual_token = data.get("shopify_access_token") or data.get("access_token")
+        actual_domain = data.get("store_domain") or data.get("domain") or data.get("shopify_domain")
+        
+        # Extract store_niche from settings JSON or direct column
+        store_niche = data.get("store_niche")
+        if not store_niche and isinstance(data.get("settings"), dict):
+            store_niche = data["settings"].get("store_niche")
+        
         # Convert to TenantConfig
         tenant = TenantConfig(
-            tenant_id=data["tenant_id"],
+            tenant_id=actual_tenant_id,
             name=data.get("name", tenant_id),
-            store_domain=data["store_domain"],
-            shopify_access_token=data["shopify_access_token"],
+            store_domain=actual_domain,
+            shopify_access_token=actual_token,
             shopify_api_version=data.get("shopify_api_version", "2024-01"),
             default_link_strategy=data.get("default_link_strategy", "permalink"),
             brand_voice=data.get("brand_voice", "curto_humano"),
             handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),
+            store_niche=store_niche,
             active=data.get("active", True),
         )
         
-        # Cache for subsequent requests
-        self._cache[tenant_id] = tenant
+        # Cache for subsequent requests (by both id and name)
+        self._cache[actual_tenant_id] = tenant
+        self._cache[tenant.name] = tenant
         
         return tenant
     
