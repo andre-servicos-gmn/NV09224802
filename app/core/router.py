@@ -45,7 +45,6 @@ class RouterDecision:
     sentiment_score: float
     needs_handoff: bool
     handoff_reason: str | None
-    handoff_reason: str | None
     used_sentiment_llm: bool
     token_usage: dict | None = None
 
