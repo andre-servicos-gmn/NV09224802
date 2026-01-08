@@ -7,7 +7,10 @@ usando a API real da Shopify.
 
 from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
+from app.core.state import ConversationState
+from app.core.tenancy import TenantConfig
 from app.tools.shopify_client import ShopifyClient
+import requests
 
 
 def action_resolve_product(
@@ -40,6 +43,19 @@ def action_resolve_product(
         state.metadata["product_title"] = product["title"]
         state.metadata["product_price"] = product["price"]
         state.last_action_success = True
+    except requests.Timeout:
+        state.last_action_success = False
+        state.metadata["product_error"] = "timeout"
+        state.bump_frustration()
+    except requests.HTTPError as e:
+        state.last_action_success = False
+        if e.response.status_code == 404:
+            state.metadata["product_error"] = "not_found"
+        elif e.response.status_code == 429:
+            state.metadata["product_error"] = "rate_limit"
+        else:
+            state.metadata["product_error"] = str(e)
+        state.bump_frustration()
     except Exception as e:
         state.last_action_success = False
         state.metadata["product_error"] = str(e)

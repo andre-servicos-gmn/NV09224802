@@ -1,3 +1,4 @@
+# Modified: add product search, variant listing, and inventory checks.
 """
 Cliente real da Shopify Admin API.
 Substitui shopify_stub.py com chamadas HTTP reais.
@@ -130,3 +131,115 @@ class ShopifyClient:
         elif strategy == "human_handoff":
             return ""
         return ""
+
+    def search_products(self, query: str, limit: int = 5) -> list[dict]:
+        """
+        Busca produtos publicados por titulo usando a Shopify Admin API.
+
+        Args:
+            query: Termo de busca do usuario
+            limit: Numero maximo de resultados
+
+        Returns:
+            Lista de produtos com campos essenciais para listagem
+        """
+        response = requests.get(
+            f"{self.base_url}/products.json",
+            params={
+                "title": query,
+                "limit": limit,
+                "published_status": "published",
+            },
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        products = data.get("products", [])
+        results: list[dict] = []
+
+        for product in products:
+            variants = product.get("variants", []) or []
+            if not variants:
+                continue
+            first_variant = variants[0]
+            in_stock = any((v.get("inventory_quantity") or 0) > 0 for v in variants)
+            results.append(
+                {
+                    "product_id": str(product.get("id")),
+                    "title": product.get("title", ""),
+                    "price": str(first_variant.get("price", "")),
+                    "image_url": (product.get("image") or {}).get("src"),
+                    "has_variants": len(variants) > 1,
+                    "in_stock": in_stock,
+                }
+            )
+
+        return results
+
+    def get_product_variants(self, product_id: str) -> list[dict]:
+        """
+        Busca variantes de um produto especifico.
+
+        Args:
+            product_id: ID do produto na Shopify
+
+        Returns:
+            Lista de variantes com estoque e disponibilidade
+        """
+        response = requests.get(
+            f"{self.base_url}/products/{product_id}.json",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        product = data.get("product")
+        if not product:
+            raise ValueError(f"Product not found: {product_id}")
+
+        variants = product.get("variants", []) or []
+        result: list[dict] = []
+        for variant in variants:
+            inventory_quantity = int(variant.get("inventory_quantity") or 0)
+            result.append(
+                {
+                    "variant_id": str(variant.get("id")),
+                    "title": variant.get("title", ""),
+                    "price": str(variant.get("price", "")),
+                    "inventory_quantity": inventory_quantity,
+                    "available": inventory_quantity > 0,
+                }
+            )
+
+        return result
+
+    def check_inventory(self, variant_id: str) -> dict:
+        """
+        Verifica estoque de uma variante.
+
+        Args:
+            variant_id: ID da variante na Shopify
+
+        Returns:
+            dict com inventory_quantity e available
+        """
+        response = requests.get(
+            f"{self.base_url}/variants/{variant_id}.json",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        variant = data.get("variant")
+        if not variant:
+            raise ValueError(f"Variant not found: {variant_id}")
+
+        inventory_quantity = int(variant.get("inventory_quantity") or 0)
+        return {
+            "inventory_quantity": inventory_quantity,
+            "available": inventory_quantity > 0,
+        }

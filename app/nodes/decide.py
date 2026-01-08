@@ -1,9 +1,13 @@
+# Modified: route new sales intents to search/select action nodes.
 from app.core.constants import (
     INTENT_CART_RETRY,
     INTENT_CHECKOUT_ERROR,
     INTENT_GREETING,
     INTENT_PRODUCT_LINK,
     INTENT_PURCHASE_INTENT,
+    INTENT_SEARCH_PRODUCT,
+    INTENT_SELECT_PRODUCT,
+    INTENT_SELECT_VARIANT,
 )
 from app.core.state import ConversationState
 from app.core.strategies import next_strategy
@@ -23,6 +27,24 @@ def decide(state: ConversationState, tenant: TenantConfig) -> ConversationState:
 
     if state.intent == INTENT_PRODUCT_LINK:
         state.next_step = "action_resolve_product"
+        return state
+
+    if state.intent == INTENT_SEARCH_PRODUCT:
+        state.next_step = "action_search_products"
+        return state
+
+    if state.intent == INTENT_SELECT_PRODUCT:
+        if state.selected_products:
+            state.next_step = "action_select_product"
+        else:
+            state.next_step = "respond"
+        return state
+
+    if state.intent == INTENT_SELECT_VARIANT:
+        if state.available_variants:
+            state.next_step = "action_select_variant"
+        else:
+            state.next_step = "respond"
         return state
 
     if state.intent in {INTENT_PURCHASE_INTENT, INTENT_CART_RETRY, INTENT_CHECKOUT_ERROR}:

@@ -19,6 +19,11 @@ from .constants import (
     INTENT_PROVIDE_ORDER_ID,
     INTENT_PURCHASE_INTENT,
     INTENT_RETURN_EXCHANGE,
+    INTENT_SEARCH_PRODUCT,
+    INTENT_SELECT_PRODUCT,
+    INTENT_SELECT_VARIANT,
+    INTENT_ADD_TO_CART,
+    INTENT_VIEW_CART,
     INTENT_SHIPPING_QUESTION,
     INTENT_STORE_QUESTION,
     DEFAULT_INTENT,
@@ -73,6 +78,11 @@ def classify_domain_heuristic(intent: str) -> str:
         INTENT_PRODUCT_LINK,
         INTENT_CART_RETRY,
         INTENT_CHECKOUT_ERROR,
+        INTENT_SEARCH_PRODUCT,
+        INTENT_SELECT_PRODUCT,
+        INTENT_SELECT_VARIANT,
+        INTENT_ADD_TO_CART,
+        INTENT_VIEW_CART,
     }
     support = {
         INTENT_ORDER_STATUS,
@@ -209,6 +219,10 @@ def apply_entities_to_state(state, entities: dict) -> None:
     
     if entities.get("product_url") and not state.metadata.get("product_url"):
         state.metadata["product_url"] = entities.get("product_url")
+
+    # [NEW] Map extracted search query to state
+    if entities.get("search_query"):
+        state.search_query = entities["search_query"]
     
     state.metadata["entities"] = entities
 
