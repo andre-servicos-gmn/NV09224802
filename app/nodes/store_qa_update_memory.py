@@ -129,21 +129,26 @@ Extraia os fatos e gere o resumo."""
         msg_lower = (state.last_user_message or "").lower()
         is_institutional = any(term in msg_lower for term in institutional_terms)
         
-        if is_institutional:
+        # HARDEN: Manual/policy intents should NEVER ask for missing info
+        manual_intents = {"shipping_question", "payment_question", "return_exchange", "store_question"}
+        is_manual_intent = state.intent in manual_intents
+        
+        if is_institutional or is_manual_intent:
             state.missing_info_needed = []
             if os.getenv("DEBUG"):
-                print("[Memory] Institutional question - no missing info needed")
+                print(f"[Memory] institutional={is_institutional} manual_intent={is_manual_intent} → no missing info")
         elif "missing_info_needed" in parsed:
-            # Filter out order_id/email from missing_info for general questions
+            # Filter using ban_terms blacklist (not exact match)
+            ban_terms = ["pedido", "order", "email", "e-mail", "data", "cpf", "cnpj", "número"]
             missing = parsed.get("missing_info_needed", [])
-            filtered = [item for item in missing if item.lower() not in ["order_id", "email", "número do pedido", "e-mail"]]
+            filtered = [x for x in missing if not any(t in x.lower() for t in ban_terms)]
             state.missing_info_needed = filtered
         
         state.last_action = "update_memory"
         state.last_action_success = True
         
         if os.getenv("DEBUG"):
-            print(f"[Memory] Summary: {state.conversation_summary}")
+            print(f"[Memory] intent={state.intent} Summary: {state.conversation_summary}")
             print(f"[Memory] Facts: {state.facts}")
             print(f"[Memory] Missing: {state.missing_info_needed}")
         

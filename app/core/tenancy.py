@@ -62,44 +62,54 @@ class TenantRegistry:
         if use_cache and tenant_id in self._cache:
             return self._cache[tenant_id]
         
-        # Fetch from Supabase - try by tenant_id first
         data = None
+        
+        # Try 1: Fetch by tenant_id column
         try:
-            response = (
+            resp = (
                 self._supabase.table("tenants")
                 .select("*")
                 .eq("tenant_id", tenant_id)
-                .single()
                 .execute()
             )
-            if response.data:
-                data = response.data[0] if isinstance(response.data, list) else response.data
+            if resp.data and len(resp.data) > 0:
+                data = resp.data[0]
         except Exception:
             pass
         
-        # If not found by tenant_id, try by name
+        # Try 2: Fetch by id column (if tenant_id is UUID and table uses "id")
         if not data:
             try:
-                response = (
+                resp = (
+                    self._supabase.table("tenants")
+                    .select("*")
+                    .eq("id", tenant_id)
+                    .execute()
+                )
+                if resp.data and len(resp.data) > 0:
+                    data = resp.data[0]
+            except Exception:
+                pass
+        
+        # Try 3: Fetch by name (ilike for case-insensitive)
+        if not data:
+            try:
+                resp = (
                     self._supabase.table("tenants")
                     .select("*")
                     .ilike("name", tenant_id)
-                    .single()
                     .execute()
                 )
-                if response.data:
-                    data = response.data[0] if isinstance(response.data, list) else response.data
+                if resp.data and len(resp.data) > 0:
+                    data = resp.data[0]
             except Exception:
                 pass
         
         if not data:
             raise ValueError(f"Tenant not found: {tenant_id}")
         
-        if os.getenv("DEBUG"):
-            print(f"[Tenant] Keys from Supabase: {list(data.keys())}")
-        
         # Check if tenant is active
-        if not data.get("active", True):
+        if data.get("active") is False:
             raise ValueError(f"Tenant is inactive: {tenant_id}")
         
         # Handle different column name variations from Supabase
@@ -111,6 +121,9 @@ class TenantRegistry:
         store_niche = data.get("store_niche")
         if not store_niche and isinstance(data.get("settings"), dict):
             store_niche = data["settings"].get("store_niche")
+        
+        if os.getenv("DEBUG"):
+            print(f"[Tenant] Keys: {list(data.keys())} | resolved_id: {actual_tenant_id}")
         
         # Convert to TenantConfig
         tenant = TenantConfig(
@@ -126,9 +139,12 @@ class TenantRegistry:
             active=data.get("active", True),
         )
         
-        # Cache for subsequent requests (by both id and name)
-        self._cache[actual_tenant_id] = tenant
-        self._cache[tenant.name] = tenant
+        # Cache for subsequent requests (by id, name, and original input)
+        if actual_tenant_id:
+            self._cache[actual_tenant_id] = tenant
+        if tenant.name:
+            self._cache[tenant.name] = tenant
+        self._cache[tenant_id] = tenant  # Also cache by original input for compat
         
         return tenant
     
