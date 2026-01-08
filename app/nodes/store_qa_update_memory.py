@@ -134,15 +134,14 @@ Extraia os fatos e gere o resumo."""
         is_manual_intent = state.intent in manual_intents
         
         if is_institutional or is_manual_intent:
+            # For institutional/policy questions, don't ask for any missing info
             state.missing_info_needed = []
             if os.getenv("DEBUG"):
                 print(f"[Memory] institutional={is_institutional} manual_intent={is_manual_intent} → no missing info")
         elif "missing_info_needed" in parsed:
-            # Filter using ban_terms blacklist (not exact match)
-            ban_terms = ["pedido", "order", "email", "e-mail", "data", "cpf", "cnpj", "número"]
-            missing = parsed.get("missing_info_needed", [])
-            filtered = [x for x in missing if not any(t in x.lower() for t in ban_terms)]
-            state.missing_info_needed = filtered
+            # For normal support questions, keep order_id/email if LLM says it's needed
+            # Only filter out clearly irrelevant items (like CNPJ for user)
+            state.missing_info_needed = parsed.get("missing_info_needed", [])
         
         state.last_action = "update_memory"
         state.last_action_success = True
