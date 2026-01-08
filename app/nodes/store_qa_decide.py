@@ -22,6 +22,11 @@ def store_qa_decide(state: ConversationState, tenant: TenantConfig) -> Conversat
             print(f"[store_qa_decide] intent={state.intent} needs_handoff={state.needs_handoff} missing={state.missing_info_needed} repeat={state.repeat_count} next={state.next_step} strategy={state.last_strategy}")
         return state
     
+    # Safety: Manual/policy intents should NEVER ask for missing info
+    manual_intents = {"shipping_question", "payment_question", "return_exchange", "store_question"}
+    if state.intent in manual_intents:
+        state.missing_info_needed = []
+    
     # Path B: Ask for missing info (max 2 times to avoid loops)
     if state.missing_info_needed and state.repeat_count < 2:
         state.last_strategy = "ask_one_missing"
@@ -36,5 +41,6 @@ def store_qa_decide(state: ConversationState, tenant: TenantConfig) -> Conversat
     if os.getenv("DEBUG"):
         print(f"[store_qa_decide] intent={state.intent} needs_handoff={state.needs_handoff} missing={state.missing_info_needed} repeat={state.repeat_count} next={state.next_step} strategy={state.last_strategy}")
     return state
+
 
 
