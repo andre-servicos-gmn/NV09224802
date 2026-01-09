@@ -212,10 +212,24 @@ def build_secure_system_prompt(base_prompt: str) -> str:
 def should_allow_name_lookup() -> bool:
     """Check if tenant lookup by name should be allowed.
     
-    In production, should be False to prevent enumeration.
-    Can be enabled for development via ALLOW_TENANT_NAME_LOOKUP env var.
+    In production (PRODUCTION=true), should be False to prevent enumeration.
+    In development (DEBUG=true or no PRODUCTION flag), allowed by default.
+    Can be explicitly controlled via ALLOW_TENANT_NAME_LOOKUP env var.
     """
-    return os.getenv("ALLOW_TENANT_NAME_LOOKUP", "").lower() in ("true", "1", "yes")
+    # Explicit override takes precedence
+    explicit = os.getenv("ALLOW_TENANT_NAME_LOOKUP", "").lower()
+    if explicit in ("true", "1", "yes"):
+        return True
+    if explicit in ("false", "0", "no"):
+        return False
+    
+    # Default: allow in dev (DEBUG set or PRODUCTION not set)
+    if os.getenv("DEBUG"):
+        return True
+    if os.getenv("PRODUCTION", "").lower() in ("true", "1", "yes"):
+        return False
+    
+    return True  # Default to allow for dev convenience
 
 
 def get_tenant_error_message() -> str:

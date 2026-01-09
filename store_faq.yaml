@@ -1,6 +1,0 @@
-tenants:
-  demo:
-    shipping_question: "Envio em ate 3 dias uteis. Prazo total de entrega 5 a 10 dias uteis."
-    payment_question: "Aceitamos cartao de credito, pix e boleto."
-    return_exchange: "Troca e devolucao em ate 7 dias corridos apos o recebimento."
-    store_question: "Atendimento de segunda a sexta, 9h as 18h. Contato: suporte@example.com."
