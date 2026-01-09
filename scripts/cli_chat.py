@@ -173,6 +173,18 @@ def run_chat(
 
                 print(f"  Last Strategy: {state.last_strategy}")
                 print(f"  Action Success: {state.last_action_success}")
+
+                # Print Token Usage
+                router_usage = getattr(decision, "token_usage", None) or {}
+                agent_usage = state.metadata.get("token_usage_agent") or {}
+                
+                def fmt_usage(u):
+                    if not u: return "N/A"
+                    return f"{u.get('total', 0)} (P:{u.get('prompt', 0)}, C:{u.get('completion', 0)})"
+
+                print(f"  [Tokens] Router: {fmt_usage(router_usage)}")
+                print(f"  [Tokens] Agent:  {fmt_usage(agent_usage)}")
+                
                 print(f"{Colors.WARNING}-------------------------{Colors.ENDC}\n")
 
     except KeyboardInterrupt:

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, ValidationError, confloat
 
 from app.core.constants import INTENT_DESCRIPTIONS, SUPPORTED_DOMAINS, SUPPORTED_INTENTS
 from app.core.llm import get_model_name
+from app.core.llm_utils import normalize_token_usage
 
 
 IntentLiteral = Literal[*SUPPORTED_INTENTS]
@@ -26,6 +27,7 @@ class RouterResult(BaseModel):
     top_intents: list[TopIntent] = Field(default_factory=list)
     entities: dict = Field(default_factory=dict)
     rationale: str = ""
+    token_usage: dict = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 
@@ -45,6 +47,7 @@ def _build_system_prompt() -> str:
         "Rules:\n"
         "- Domain must be one of: sales, support, store_qa.\n"
         "- If it is purchase/checkout/payment link, domain = sales.\n"
+        "- If it is product search, browsing options, or selecting products, domain = sales.\n"
         "- If it is order/tracking/delivery complaint, domain = support.\n"
         "- If it is store policy or general store question, domain = store_qa.\n"
         "- Intent must be one of the supported intents listed by the user.\n"
@@ -56,7 +59,8 @@ def _build_system_prompt() -> str:
         "- If message says 'gera de novo' or 'tenta de novo' and context indicates link/checkout, "
         "domain=sales and intent=cart_retry.\n"
         "- Entities: product_url (product URL), order_id (3-8 digits), "
-        "email (email address), tracking_complaint_days (integer days when user says 'X dias').\n"
+        "email (email address), tracking_complaint_days (integer days when user says 'X dias'), "
+        "search_query (short keywords for product search, e.g. 'blue necklace' from 'I want a blue necklace').\n"
         "- Confidence: 0.9+ when clear, 0.6-0.75 when ambiguous, <0.65 when very uncertain.\n"
         "- top_intents must be a list of objects: {intent, confidence}, highest confidence first.\n"
         "Return JSON with keys: domain, intent, confidence, ambiguous, top_intents, entities, rationale.\n"
@@ -100,6 +104,10 @@ def classify_with_llm(
     result = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
     content = (result.content or "").strip()
     try:
-        return RouterResult.model_validate_json(content)
+        router_result = RouterResult.model_validate_json(content)
+        # Capture token usage from LangChain response
+        usage_raw = result.response_metadata.get("token_usage")
+        router_result.token_usage = normalize_token_usage(usage_raw)
+        return router_result
     except ValidationError as exc:
         raise ValueError("Invalid router JSON.") from exc

@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 from app.core.database import resolve_tenant_uuid, search_knowledge_base_simple
 from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
+from app.core.brand_voice import build_brand_voice_block
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -72,8 +73,9 @@ def _build_base_system_prompt(tenant: TenantConfig, domain: str) -> str:
             "Se não souber a resposta, diga que vai verificar com a equipe. "
         )
     
-    if tenant.brand_voice == "curto_humano":
-        base += "Use frases curtas e tom amigável. "
+    brand_voice = build_brand_voice_block(tenant.brand_voice)
+    if brand_voice:
+        base += f"{brand_voice} "
     
     return base
 

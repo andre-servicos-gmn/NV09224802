@@ -1,3 +1,4 @@
+# Modified: clear cross-domain metadata before storing support data.
 """Order lookup action using Shopify Admin API.
 
 Responsabilidade: buscar pedido na Shopify e atualizar o estado com dados reais.
@@ -42,6 +43,12 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
     )
 
     try:
+        # Limpar contexto de outros dominios
+        state.metadata.pop("checkout_link", None)
+        state.metadata.pop("search_query", None)
+        state.selected_products = []
+        state.available_variants = []
+
         order = None
         
         # 1. Tentar buscar por order_number (o que o cliente geralmente fornece, ex: "1001")

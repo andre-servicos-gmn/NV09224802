@@ -1,3 +1,4 @@
+# Modified: add search/products/variants/cart fields for sales flow.
 from pydantic import BaseModel, Field
 
 
@@ -7,8 +8,12 @@ class ConversationState(BaseModel):
     channel: str = "whatsapp"
     domain: str | None = None
     intent: str = "general"
+    search_query: str | None = None
+    selected_products: list[dict] = Field(default_factory=list)
     selected_product_id: str | None = None
+    available_variants: list[dict] = Field(default_factory=list)
     selected_variant_id: str | None = None
+    cart_items: list[dict] = Field(default_factory=list)
     quantity: int = 1
     order_id: str | None = None
     customer_email: str | None = None
