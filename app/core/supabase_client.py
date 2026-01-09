@@ -91,6 +91,11 @@ class TableQuery:
         self._limit_val = count
         return self
     
+    def is_(self, column: str, value: str) -> "TableQuery":
+        """Adiciona filtro IS (para null checks)."""
+        self._filters.append((column, "is", value))
+        return self
+    
     def single(self) -> "TableQuery":
         """Indica que espera apenas um resultado."""
         self._single = True

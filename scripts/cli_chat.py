@@ -131,6 +131,8 @@ def run_chat(
                 "last_intent": state.intent,
                 "has_variant_id": bool(state.selected_variant_id),
                 "has_order_id": bool(state.order_id),
+                "store_name": tenant.name,
+                "store_niche": tenant.store_niche or "loja online",
             }
             decision = classify(message, context=context, use_llm=use_llm_router)
             state.set_intent(decision.intent)
