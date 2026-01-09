@@ -233,9 +233,15 @@ EXEMPLOS DE RESPOSTAS:
 
 
 def build_store_qa_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Store Q&A agent with strict RAG grounding."""
+    """Build system prompt for Store Q&A agent with strict RAG grounding AND security rules."""
+    from app.core.security import get_prompt_guard
+    
     base = build_base_persona(tenant)
-    return f"""{base}
+    prompt_guard = get_prompt_guard()
+    
+    return f"""{prompt_guard}
+
+{base}
 
 CONTEXTO - DÚVIDAS DA LOJA:
 Você está respondendo dúvidas sobre políticas e informações da {tenant.name}.
@@ -261,6 +267,10 @@ Você está respondendo dúvidas sobre políticas e informações da {tenant.nam
 4. QUANDO NÃO SOUBER:
    - Diga: "Não tenho essa informação no momento. Posso verificar com a equipe e retornar."
    - Ou: "Para informações mais detalhadas sobre isso, nossa equipe pode ajudar melhor."
+
+5. COPIE NÚMEROS E PRAZOS EXATAMENTE:
+   Copie exatamente números, valores e prazos do Manual da Loja.
+   NÃO converta dias↔horas, NÃO arredonde, NÃO resuma prazos.
 
 === FIM DAS REGRAS ===
 

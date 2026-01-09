@@ -7,15 +7,24 @@ Per AGENT.md:
 - Action Nodes execute actions and update state
 - Action Nodes do NOT decide flow
 - Only extract EXPLICIT facts (no inference)
+
+Security:
+- PII goes to facts_pii, non-PII to facts_safe
+- Summary is redacted before storage
+- Safe logging used throughout
 """
 
-import os
 import json
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
+from app.core.security import redact_pii, safe_log, safe_log_count
+
+
+# Keys that contain PII and should go to facts_pii
+PII_KEYS = {"order_id", "email", "cep", "telefone", "cpf", "cnpj"}
 
 
 SYSTEM_PROMPT = """Você é um extrator de fatos de conversas de atendimento ao cliente.
@@ -60,7 +69,7 @@ def store_qa_update_memory(state: ConversationState, tenant: TenantConfig) -> Co
     
     This is an ACTION node per AGENT.md:
     - Executes action (extract facts via LLM)
-    - Updates state (conversation_summary, facts, missing_info_needed)
+    - Updates state (conversation_summary, facts_safe, facts_pii, missing_info_needed)
     - Does NOT decide flow
     """
     
@@ -68,20 +77,19 @@ def store_qa_update_memory(state: ConversationState, tenant: TenantConfig) -> Co
     recent_history = state.conversation_history[-10:] if state.conversation_history else []
     
     if not recent_history:
-        # No history to analyze
         state.last_action = "update_memory"
         state.last_action_success = True
         return state
     
-    # Format conversation for LLM
+    # Format conversation for LLM (redact PII from history sent to LLM)
     conversation_text = []
     for entry in recent_history:
         role = "Cliente" if entry.get("role") == "user" else "Atendente"
         message = entry.get("message", "")
         conversation_text.append(f"{role}: {message}")
     
-    # Include current facts for context (so LLM knows what was already extracted)
-    current_facts = state.facts or {}
+    # Merge current facts for context
+    current_facts = {**state.facts_safe, **state.facts_pii}
     
     user_prompt = f"""CONVERSA ATUAL:
 {chr(10).join(conversation_text)}
@@ -104,7 +112,6 @@ Extraia os fatos e gere o resumo."""
         response_text = (result.content or "").strip()
         
         # Parse JSON response
-        # Handle markdown code blocks if present
         if response_text.startswith("```"):
             response_text = response_text.split("```")[1]
             if response_text.startswith("json"):
@@ -112,15 +119,18 @@ Extraia os fatos e gere o resumo."""
         
         parsed = json.loads(response_text)
         
-        # Update state with extracted data
+        # Update conversation summary (redact PII before storage)
         if "conversation_summary" in parsed:
-            state.conversation_summary = parsed["conversation_summary"]
+            state.conversation_summary = redact_pii(parsed["conversation_summary"])
         
+        # Split facts into safe and PII
         if "facts" in parsed and isinstance(parsed["facts"], dict):
-            # Merge with existing facts, new values override old
             for key, value in parsed["facts"].items():
                 if value is not None and value != "null" and value != "":
-                    state.facts[key] = value
+                    if key.lower() in PII_KEYS:
+                        state.facts_pii[key] = value
+                    else:
+                        state.facts_safe[key] = value
         
         # DETERMINISTIC RULE: Institutional questions never ask for order/email
         institutional_terms = ["cnpj", "razão social", "razao social", "endereço", "endereco", 
@@ -134,32 +144,27 @@ Extraia os fatos e gere o resumo."""
         is_manual_intent = state.intent in manual_intents
         
         if is_institutional or is_manual_intent:
-            # For institutional/policy questions, don't ask for any missing info
             state.missing_info_needed = []
-            if os.getenv("DEBUG"):
-                print(f"[Memory] institutional={is_institutional} manual_intent={is_manual_intent} → no missing info")
+            safe_log("Memory", f"institutional={is_institutional} manual_intent={is_manual_intent} → no missing info")
         elif "missing_info_needed" in parsed:
-            # For normal support questions, keep order_id/email if LLM says it's needed
-            # Only filter out clearly irrelevant items (like CNPJ for user)
             state.missing_info_needed = parsed.get("missing_info_needed", [])
         
         state.last_action = "update_memory"
         state.last_action_success = True
         
-        if os.getenv("DEBUG"):
-            print(f"[Memory] intent={state.intent} Summary: {state.conversation_summary}")
-            print(f"[Memory] Facts: {state.facts}")
-            print(f"[Memory] Missing: {state.missing_info_needed}")
+        # Safe logging (no PII leaked)
+        safe_log("Memory", f"intent={state.intent}")
+        safe_log_count("Memory", "facts_safe count", len(state.facts_safe))
+        safe_log_count("Memory", "facts_pii count", len(state.facts_pii))
+        safe_log_count("Memory", "missing_info count", len(state.missing_info_needed))
         
     except json.JSONDecodeError as e:
-        if os.getenv("DEBUG"):
-            print(f"[Memory] JSON parse error: {e}")
+        safe_log("Memory", f"JSON parse error: {type(e).__name__}")
         state.last_action = "update_memory"
         state.last_action_success = False
         
     except Exception as e:
-        if os.getenv("DEBUG"):
-            print(f"[Memory] Error: {e}")
+        safe_log("Memory", f"Error: {type(e).__name__}")
         state.last_action = "update_memory"
         state.last_action_success = False
     
