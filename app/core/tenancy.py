@@ -91,26 +91,31 @@ class TenantRegistry:
             except Exception:
                 pass
         
-        # Try 3: Fetch by name (ilike for case-insensitive)
+        # Try 3: Fetch by name (ONLY if allowed - prevents enumeration in production)
         if not data:
-            try:
-                resp = (
-                    self._supabase.table("tenants")
-                    .select("*")
-                    .ilike("name", tenant_id)
-                    .execute()
-                )
-                if resp.data and len(resp.data) > 0:
-                    data = resp.data[0]
-            except Exception:
-                pass
+            from app.core.security import should_allow_name_lookup, get_tenant_error_message
+            if should_allow_name_lookup():
+                try:
+                    resp = (
+                        self._supabase.table("tenants")
+                        .select("*")
+                        .ilike("name", tenant_id)
+                        .execute()
+                    )
+                    if resp.data and len(resp.data) > 0:
+                        data = resp.data[0]
+                except Exception:
+                    pass
         
         if not data:
-            raise ValueError(f"Tenant not found: {tenant_id}")
+            # Generic error to prevent tenant enumeration
+            from app.core.security import get_tenant_error_message
+            raise ValueError(get_tenant_error_message())
         
         # Check if tenant is active
         if data.get("active") is False:
-            raise ValueError(f"Tenant is inactive: {tenant_id}")
+            from app.core.security import get_tenant_error_message
+            raise ValueError(get_tenant_error_message())
         
         # Handle different column name variations from Supabase
         actual_tenant_id = data.get("tenant_id") or data.get("id")
