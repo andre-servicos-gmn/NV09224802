@@ -1,0 +1,8 @@
+tenants:
+  demo:
+    tenant_id: "demo"
+    name: "Demo Store"
+    store_domain: "tfhamg-gk.myshopify.com"
+    default_link_strategy: "permalink"
+    brand_voice: "curto_humano"
+    handoff_message: "Vou te colocar com um atendente humano pra resolver mais rapido."
