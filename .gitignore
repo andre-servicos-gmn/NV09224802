@@ -284,3 +284,26 @@ temp/
 
 # Nouvaris specific
 nouvaris_agents_v2.egg-info/
+
+# ==============================================================================
+# NODE.JS / FRONTEND
+# ==============================================================================
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+.next/
+out/
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Turbo
+.turbo

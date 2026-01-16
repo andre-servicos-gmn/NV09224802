@@ -1,23 +1,34 @@
-# Nouvaris Agents V2
+# Nouvaris
 
-Base inicial com LangGraph, estado canonico e CLI funcional.
+A monorepo containing the Nouvaris AI Agent Platform.
 
-## Setup
+## Structure
 
-1) Criar venv e instalar dependencias
+```
+nouvaris/
+├── backend/      # Python AI agents (FastAPI, LangGraph)
+└── frontend/     # Next.js dashboard
+```
 
+## Getting Started
+
+### Backend
+
+```bash
+cd backend
 python -m venv .venv
-.venv\Scripts\activate
-pip install -e .[dev]
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+pip install -e .
+```
 
-2) Rodar o CLI
+### Frontend
 
-python scripts\cli_chat.py --debug
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-3) Rodar um dialogo de script
+## Documentation
 
-python scripts\cli_chat.py --script tests\dialogs\checkout_retry.txt --debug
-
-4) Rodar testes
-
-pytest -q
+- Backend agent documentation: `backend/AGENT.md`
