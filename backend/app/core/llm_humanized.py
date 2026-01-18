@@ -336,6 +336,23 @@ def _build_context_prompt(
             lines.append(f"- product: {product_title or '(none)'} - {price_text}")
         else:
             lines.append(f"- product: {product_title or '(none)'}")
+    
+    # Include product details for answering questions about materials, composition, etc.
+    product_description = state.metadata.get("product_description")
+    if product_description:
+        # Strip HTML tags for cleaner output
+        import re
+        clean_desc = re.sub(r'<[^>]+>', '', product_description).strip()
+        if clean_desc:
+            lines.append(f"- product_description: {clean_desc[:500]}")
+    
+    product_tags = state.metadata.get("product_tags")
+    if product_tags:
+        lines.append(f"- product_tags: {product_tags}")
+    
+    product_type = state.metadata.get("product_type")
+    if product_type:
+        lines.append(f"- product_type: {product_type}")
 
     selected_variant_title = state.metadata.get("selected_variant_title")
     selected_variant_price = state.metadata.get("selected_variant_price")

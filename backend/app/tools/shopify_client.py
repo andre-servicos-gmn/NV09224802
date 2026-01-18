@@ -99,7 +99,11 @@ class ShopifyClient:
             "product_id": str(product["id"]),
             "variant_id": str(variant["id"]),
             "title": product["title"],
-            "price": variant["price"]
+            "price": variant["price"],
+            "description": product.get("body_html") or "",
+            "tags": product.get("tags") or "",
+            "product_type": product.get("product_type") or "",
+            "vendor": product.get("vendor") or "",
         }
     
     def build_checkout_link(

@@ -36,12 +36,32 @@ def action_resolve_product(
         api_version=tenant.shopify_api_version,
     )
     
+    # Usar product_url da entidade extraída pelo router, não a mensagem inteira
+    product_url = state.metadata.get("product_url") or ""
+    
+    # Fallback: tentar extrair URL da mensagem se não estiver no metadata
+    if not product_url:
+        import re
+        url_match = re.search(r"https?://\S+", state.last_user_message or "")
+        if url_match and "products/" in url_match.group(0):
+            product_url = url_match.group(0)
+    
+    if not product_url:
+        state.last_action_success = False
+        state.metadata["product_error"] = "missing_product_url"
+        state.next_step = "respond"
+        return state
+    
     try:
-        product = client.get_product_by_url(state.last_user_message or "")
+        product = client.get_product_by_url(product_url)
         state.selected_product_id = product["product_id"]
         state.selected_variant_id = product["variant_id"]
         state.metadata["product_title"] = product["title"]
         state.metadata["product_price"] = product["price"]
+        state.metadata["product_description"] = product.get("description") or ""
+        state.metadata["product_tags"] = product.get("tags") or ""
+        state.metadata["product_type"] = product.get("product_type") or ""
+        state.metadata["product_vendor"] = product.get("vendor") or ""
         state.last_action_success = True
     except requests.Timeout:
         state.last_action_success = False
