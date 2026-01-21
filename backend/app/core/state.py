@@ -37,12 +37,10 @@ class ConversationState(BaseModel):
     original_complaint: str | None = None  # Stores the original issue for context
     
     # Short-term memory for Store Q&A (human touch)
-    conversation_summary: str | None = None  # 2-6 lines summary (should be redacted)
-    facts_safe: dict = Field(default_factory=dict)  # Non-PII: nome, produto, problema, pagamento, urgencia
-    facts_pii: dict = Field(default_factory=dict)  # PII: order_id, email, cep, telefone, cpf
+    conversation_summary: str | None = None  # 2-6 lines summary
+    facts: dict = Field(default_factory=dict)  # order_id, email, nome, cep, produto, problema, pagamento, data_compra, urgencia
     missing_info_needed: list[str] = Field(default_factory=list)  # What info we still need
     repeat_count: int = 0  # Avoid repeating same question
-    order_verified: bool = False  # True after order lookup succeeds
 
     def bump_frustration(self) -> None:
         self.frustration_level += 1

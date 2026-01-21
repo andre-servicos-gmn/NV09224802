@@ -1,34 +1,37 @@
 # Nouvaris
 
-A monorepo containing the Nouvaris AI Agent Platform.
+Plataforma de agentes de IA com dashboard de métricas.
 
-## Structure
+## Estrutura do Monorepo
 
 ```
 nouvaris/
-├── backend/      # Python AI agents (FastAPI, LangGraph)
-└── frontend/     # Next.js dashboard
+├── backend/          # Agentes Python (LangGraph)
+└── frontend/         # Dashboard Next.js
 ```
 
-## Getting Started
+## Setup
 
-### Backend
+### Backend (Agentes Python)
 
 ```bash
 cd backend
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-pip install -e .
+.venv\Scripts\activate
+pip install -e .[dev]
+
+# Rodar CLI
+python scripts\cli_chat.py --debug
 ```
 
-### Frontend
+### Frontend (Dashboard)
 
 ```bash
-cd frontend
+# Instalar dependências
 npm install
+
+# Rodar em modo dev
 npm run dev
 ```
 
-## Documentation
-
-- Backend agent documentation: `backend/AGENT.md`
+Acesse o dashboard em [http://localhost:3000](http://localhost:3000)

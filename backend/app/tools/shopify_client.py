@@ -99,7 +99,11 @@ class ShopifyClient:
             "product_id": str(product["id"]),
             "variant_id": str(variant["id"]),
             "title": product["title"],
-            "price": variant["price"]
+            "price": variant["price"],
+            "description": product.get("body_html") or "",
+            "tags": product.get("tags") or "",
+            "product_type": product.get("product_type") or "",
+            "vendor": product.get("vendor") or "",
         }
     
     def build_checkout_link(
@@ -134,7 +138,7 @@ class ShopifyClient:
 
     def search_products(self, query: str, limit: int = 5) -> list[dict]:
         """
-        Busca produtos publicados por titulo usando a Shopify Admin API.
+        Busca produtos publicados usando a Shopify Admin API.
 
         Args:
             query: Termo de busca do usuario
@@ -143,11 +147,12 @@ class ShopifyClient:
         Returns:
             Lista de produtos com campos essenciais para listagem
         """
+        # Shopify REST API não suporta busca fuzzy por título.
+        # Solução: buscar todos os produtos publicados e filtrar localmente
         response = requests.get(
             f"{self.base_url}/products.json",
             params={
-                "title": query,
-                "limit": limit,
+                "limit": 50,  # Buscar mais para ter margem de filtragem
                 "published_status": "published",
             },
             headers=self.headers,
@@ -158,8 +163,37 @@ class ShopifyClient:
         data = response.json()
         products = data.get("products", [])
         results: list[dict] = []
+        
+        # Normalizar query para busca case-insensitive
+        query_lower = query.lower().strip()
+        query_terms = query_lower.split()
 
         for product in products:
+            # Filtrar por correspondência no título, tags ou tipo
+            title = (product.get("title") or "").lower()
+            tags = (product.get("tags") or "").lower()
+            product_type = (product.get("product_type") or "").lower()
+            description = (product.get("body_html") or "").lower()
+            
+            # Verifica se algum termo da query está presente
+            matches = any(
+                term in title or term in tags or term in product_type or term in description
+                for term in query_terms
+            )
+            
+            # Se query é vazia ou genérica (termos que indicam busca ampla), incluir todos
+            generic_queries = [
+                "produtos", "produtos da loja", "top", "top 5", "todos", 
+                "joias", "jóias", "jewelry", "acessorios", "acessórios",
+                "loja", "catálogo", "catalogo", "ver tudo", "mostrar tudo",
+                "o que tem", "o que vocês tem", "o que voces tem"
+            ]
+            if not query_terms or any(q in query_lower for q in generic_queries):
+                matches = True
+            
+            if not matches:
+                continue
+                
             variants = product.get("variants", []) or []
             if not variants:
                 continue
@@ -175,6 +209,10 @@ class ShopifyClient:
                     "in_stock": in_stock,
                 }
             )
+            
+            # Limitar ao número solicitado
+            if len(results) >= limit:
+                break
 
         return results
 

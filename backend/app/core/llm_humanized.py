@@ -233,15 +233,9 @@ EXEMPLOS DE RESPOSTAS:
 
 
 def build_store_qa_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Store Q&A agent with strict RAG grounding AND security rules."""
-    from app.core.security import get_prompt_guard
-    
+    """Build system prompt for Store Q&A agent with strict RAG grounding."""
     base = build_base_persona(tenant)
-    prompt_guard = get_prompt_guard()
-    
-    return f"""{prompt_guard}
-
-{base}
+    return f"""{base}
 
 CONTEXTO - DÚVIDAS DA LOJA:
 Você está respondendo dúvidas sobre políticas e informações da {tenant.name}.
@@ -267,10 +261,6 @@ Você está respondendo dúvidas sobre políticas e informações da {tenant.nam
 4. QUANDO NÃO SOUBER:
    - Diga: "Não tenho essa informação no momento. Posso verificar com a equipe e retornar."
    - Ou: "Para informações mais detalhadas sobre isso, nossa equipe pode ajudar melhor."
-
-5. COPIE NÚMEROS E PRAZOS EXATAMENTE:
-   Copie exatamente números, valores e prazos do Manual da Loja.
-   NÃO converta dias↔horas, NÃO arredonde, NÃO resuma prazos.
 
 === FIM DAS REGRAS ===
 
@@ -346,6 +336,23 @@ def _build_context_prompt(
             lines.append(f"- product: {product_title or '(none)'} - {price_text}")
         else:
             lines.append(f"- product: {product_title or '(none)'}")
+    
+    # Include product details for answering questions about materials, composition, etc.
+    product_description = state.metadata.get("product_description")
+    if product_description:
+        # Strip HTML tags for cleaner output
+        import re
+        clean_desc = re.sub(r'<[^>]+>', '', product_description).strip()
+        if clean_desc:
+            lines.append(f"- product_description: {clean_desc[:500]}")
+    
+    product_tags = state.metadata.get("product_tags")
+    if product_tags:
+        lines.append(f"- product_tags: {product_tags}")
+    
+    product_type = state.metadata.get("product_type")
+    if product_type:
+        lines.append(f"- product_type: {product_type}")
 
     selected_variant_title = state.metadata.get("selected_variant_title")
     selected_variant_price = state.metadata.get("selected_variant_price")
@@ -361,10 +368,20 @@ def _build_context_prompt(
         for idx, product in enumerate(state.selected_products, start=1):
             title = product.get("title") or "Produto"
             price = _format_price(product.get("price"))
+            desc = product.get("description", "")
+            # Clean HTML from description
+            if desc:
+                import re
+                desc = re.sub(r'<[^>]+>', '', desc).strip()[:200]
+            
             if price:
                 lines.append(f"  {idx}. {title} - {price}")
             else:
                 lines.append(f"  {idx}. {title}")
+            
+            # Add description if available (helps answer questions about materials, etc.)
+            if desc:
+                lines.append(f"     ({desc})")
     else:
         lines.append("- selected_products: (none)")
 

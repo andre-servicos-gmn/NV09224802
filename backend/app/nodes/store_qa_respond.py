@@ -79,25 +79,17 @@ def _build_knowledge_context(results: list) -> str:
 
 
 def _build_memory_context(state: ConversationState) -> str:
-    """Build memory context from state for human-like responses.
-    
-    SECURITY: Only includes facts_safe (no PII) and redacted summary.
-    PII is NOT sent to the LLM prompt.
-    """
-    from app.core.security import redact_pii
-    
+    """Build memory context from state for human-like responses."""
     lines = []
     
     if state.conversation_summary:
         lines.append("[Resumo da Conversa]")
-        # Summary should already be redacted, but double-check
-        lines.append(redact_pii(state.conversation_summary))
+        lines.append(state.conversation_summary)
         lines.append("")
     
-    # Only include facts_safe (non-PII) in prompt
-    if state.facts_safe:
+    if state.facts:
         lines.append("[Fatos Conhecidos sobre o Cliente]")
-        for key, value in state.facts_safe.items():
+        for key, value in state.facts.items():
             if value:
                 lines.append(f"- {key}: {value}")
         lines.append("")

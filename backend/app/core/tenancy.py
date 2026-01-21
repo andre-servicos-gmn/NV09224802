@@ -16,10 +16,12 @@ class TenantConfig(BaseModel):
     """Configuração de um tenant."""
     
     tenant_id: str
+    uuid: str | None = None  # Database UUID (tenants.id column)
     name: str
     store_domain: str | None = None
     shopify_access_token: str | None = None
     shopify_api_version: str = "2024-01"
+    webhook_secret: str | None = None  # Secret for webhook HMAC validation
     default_link_strategy: str = "permalink"
     brand_voice: str = "curto_humano"
     handoff_message: str = "Vou te colocar com um atendente humano..."
@@ -91,31 +93,26 @@ class TenantRegistry:
             except Exception:
                 pass
         
-        # Try 3: Fetch by name (ONLY if allowed - prevents enumeration in production)
+        # Try 3: Fetch by name (ilike for case-insensitive)
         if not data:
-            from app.core.security import should_allow_name_lookup, get_tenant_error_message
-            if should_allow_name_lookup():
-                try:
-                    resp = (
-                        self._supabase.table("tenants")
-                        .select("*")
-                        .ilike("name", tenant_id)
-                        .execute()
-                    )
-                    if resp.data and len(resp.data) > 0:
-                        data = resp.data[0]
-                except Exception:
-                    pass
+            try:
+                resp = (
+                    self._supabase.table("tenants")
+                    .select("*")
+                    .ilike("name", tenant_id)
+                    .execute()
+                )
+                if resp.data and len(resp.data) > 0:
+                    data = resp.data[0]
+            except Exception:
+                pass
         
         if not data:
-            # Generic error to prevent tenant enumeration
-            from app.core.security import get_tenant_error_message
-            raise ValueError(get_tenant_error_message())
+            raise ValueError(f"Tenant not found: {tenant_id}")
         
         # Check if tenant is active
         if data.get("active") is False:
-            from app.core.security import get_tenant_error_message
-            raise ValueError(get_tenant_error_message())
+            raise ValueError(f"Tenant is inactive: {tenant_id}")
         
         # Handle different column name variations from Supabase
         actual_tenant_id = data.get("tenant_id") or data.get("id")
@@ -133,10 +130,12 @@ class TenantRegistry:
         # Convert to TenantConfig
         tenant = TenantConfig(
             tenant_id=actual_tenant_id,
+            uuid=data.get("id"),  # Database UUID for FK references
             name=data.get("name", tenant_id),
             store_domain=actual_domain,
             shopify_access_token=actual_token,
             shopify_api_version=data.get("shopify_api_version", "2024-01"),
+            webhook_secret=data.get("webhook_secret"),  # For webhook HMAC validation
             default_link_strategy=data.get("default_link_strategy", "permalink"),
             brand_voice=data.get("brand_voice", "curto_humano"),
             handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),

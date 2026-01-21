@@ -192,11 +192,17 @@ class TableQuery:
         headers = dict(self.client.headers)
         headers["Prefer"] = "resolution=merge-duplicates,return=representation"
         
+        # Add on_conflict parameter if specified
+        params = {}
+        if hasattr(self, '_on_conflict') and self._on_conflict:
+            params["on_conflict"] = self._on_conflict
+        
         response = httpx.post(
             url,
+            params=params,
             json=self._upsert_data if isinstance(self._upsert_data, list) else [self._upsert_data],
             headers=headers,
-            timeout=10
+            timeout=30  # Increased timeout for embedding operations
         )
         response.raise_for_status()
         
