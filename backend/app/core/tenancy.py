@@ -16,10 +16,12 @@ class TenantConfig(BaseModel):
     """Configuração de um tenant."""
     
     tenant_id: str
+    uuid: str | None = None  # Database UUID (tenants.id column)
     name: str
     store_domain: str | None = None
     shopify_access_token: str | None = None
     shopify_api_version: str = "2024-01"
+    webhook_secret: str | None = None  # Secret for webhook HMAC validation
     default_link_strategy: str = "permalink"
     brand_voice: str = "curto_humano"
     handoff_message: str = "Vou te colocar com um atendente humano..."
@@ -128,10 +130,12 @@ class TenantRegistry:
         # Convert to TenantConfig
         tenant = TenantConfig(
             tenant_id=actual_tenant_id,
+            uuid=data.get("id"),  # Database UUID for FK references
             name=data.get("name", tenant_id),
             store_domain=actual_domain,
             shopify_access_token=actual_token,
             shopify_api_version=data.get("shopify_api_version", "2024-01"),
+            webhook_secret=data.get("webhook_secret"),  # For webhook HMAC validation
             default_link_strategy=data.get("default_link_strategy", "permalink"),
             brand_voice=data.get("brand_voice", "curto_humano"),
             handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),

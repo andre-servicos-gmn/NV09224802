@@ -181,8 +181,14 @@ class ShopifyClient:
                 for term in query_terms
             )
             
-            # Se query é vazia ou genérica ("produtos", "loja"), incluir todos
-            if not query_terms or query_lower in ["produtos", "produtos da loja", "top", "top 5"]:
+            # Se query é vazia ou genérica (termos que indicam busca ampla), incluir todos
+            generic_queries = [
+                "produtos", "produtos da loja", "top", "top 5", "todos", 
+                "joias", "jóias", "jewelry", "acessorios", "acessórios",
+                "loja", "catálogo", "catalogo", "ver tudo", "mostrar tudo",
+                "o que tem", "o que vocês tem", "o que voces tem"
+            ]
+            if not query_terms or any(q in query_lower for q in generic_queries):
                 matches = True
             
             if not matches:

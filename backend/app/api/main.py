@@ -1,0 +1,154 @@
+"""
+FastAPI application for Nouvaris backend API.
+
+Provides HTTP endpoints for:
+- Webhook integrations (Shopify, etc.)
+- Health checks
+- Future: Admin API, Analytics, etc.
+
+Security:
+- CORS configured for specific origins only
+- Rate limiting on sensitive endpoints
+- Request logging with sensitive data redaction
+"""
+
+import logging
+import os
+import sys
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+# Add parent path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from app.api.webhooks import router as webhooks_router
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler."""
+    logger.info("Starting Nouvaris API server...")
+    yield
+    logger.info("Shutting down Nouvaris API server...")
+
+
+# Create FastAPI app
+app = FastAPI(
+    title="Nouvaris API",
+    description="Backend API for Nouvaris AI agents platform",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if os.getenv("DEBUG") else None,  # Disable docs in production
+    redoc_url="/redoc" if os.getenv("DEBUG") else None,
+)
+
+
+# CORS configuration - restrict to known origins only
+ALLOWED_ORIGINS = [
+    "https://nouvaris.com",
+    "https://app.nouvaris.com",
+    "https://dashboard.nouvaris.com",
+]
+
+# Add localhost for development
+if os.getenv("DEBUG"):
+    ALLOWED_ORIGINS.extend([
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+    ])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],  # Restrict to needed methods only
+    allow_headers=["*"],
+)
+
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests with sensitive data redaction."""
+    # Redact sensitive headers
+    safe_headers = {
+        k: v if k.lower() not in ("authorization", "x-shopify-hmac-sha256") else "[REDACTED]"
+        for k, v in request.headers.items()
+    }
+    
+    logger.info(
+        f"Request: {request.method} {request.url.path} "
+        f"client={request.client.host if request.client else 'unknown'}"
+    )
+    
+    response = await call_next(request)
+    
+    logger.info(
+        f"Response: {request.method} {request.url.path} "
+        f"status={response.status_code}"
+    )
+    
+    return response
+
+
+# Global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Handle uncaught exceptions without leaking internal details."""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
+
+# Register routers
+app.include_router(webhooks_router)
+
+
+# Root endpoint
+@app.get("/", summary="API root")
+async def root():
+    """API root endpoint."""
+    return {
+        "service": "Nouvaris API",
+        "version": "1.0.0",
+        "status": "running",
+    }
+
+
+@app.get("/health", summary="Health check")
+async def health():
+    """Global health check endpoint."""
+    return {"status": "healthy"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    port = int(os.getenv("PORT", 8000))
+    debug = os.getenv("DEBUG", "").lower() in ("true", "1")
+    
+    uvicorn.run(
+        "app.api.main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=debug,
+    )

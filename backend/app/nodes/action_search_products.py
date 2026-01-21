@@ -1,15 +1,76 @@
-# Modified: clear cross-domain metadata and store search metadata for sales.
+# Modified: Uses RAG semantic search with REST API fallback.
 """
-Action node que busca produtos por texto na Shopify.
+Action node que busca produtos por texto usando RAG (busca semântica).
 
-Atualiza o estado com ate 5 resultados para listagem no respond node.
+Usa embeddings e pgvector para encontrar produtos semanticamente similares.
+Fallback para REST API se RAG falhar ou não houver produtos indexados.
 """
 
-import requests
+import os
+from typing import Optional
 
 from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
 from app.tools.shopify_client import ShopifyClient
+
+
+def _search_with_rag(
+    tenant: TenantConfig,
+    query: str,
+    limit: int = 5,
+) -> Optional[list[dict]]:
+    """Search products using RAG semantic search.
+    
+    Args:
+        tenant: Tenant configuration with UUID.
+        query: Search query.
+        limit: Maximum results.
+        
+    Returns:
+        List of products or None if RAG is unavailable/empty.
+    """
+    if not tenant.uuid:
+        return None
+    
+    try:
+        from app.rag_engine.pipeline import RAGPipeline
+        
+        pipeline = RAGPipeline(tenant_id=tenant.uuid)
+        results = pipeline.get_products_for_state(query, limit=limit)
+        
+        # Return None if RAG returned no results (may need fallback)
+        if not results:
+            return None
+        
+        return results
+        
+    except Exception as e:
+        if os.getenv("DEBUG"):
+            print(f"[RAG] Search failed, falling back to REST: {e}")
+        return None
+
+
+def _search_with_rest_api(
+    tenant: TenantConfig,
+    query: str,
+    limit: int = 5,
+) -> list[dict]:
+    """Search products using Shopify REST API (fallback).
+    
+    Args:
+        tenant: Tenant configuration.
+        query: Search query.
+        limit: Maximum results.
+        
+    Returns:
+        List of products.
+    """
+    client = ShopifyClient(
+        store_domain=tenant.store_domain,
+        access_token=tenant.shopify_access_token,
+        api_version=tenant.shopify_api_version,
+    )
+    return client.search_products(query=query, limit=limit)
 
 
 def action_search_products(
@@ -17,7 +78,10 @@ def action_search_products(
     tenant: TenantConfig
 ) -> ConversationState:
     """
-    Busca produtos por texto usando a Shopify Admin API.
+    Busca produtos por texto usando RAG semantic search.
+    
+    Prioriza busca semântica via embeddings (mais precisa).
+    Fallback para REST API se RAG não disponível.
 
     Args:
         state: Estado atual da conversa
@@ -26,12 +90,8 @@ def action_search_products(
     Returns:
         ConversationState atualizado com selected_products
     """
-    client = ShopifyClient(
-        store_domain=tenant.store_domain,
-        access_token=tenant.shopify_access_token,
-        api_version=tenant.shopify_api_version,
-    )
-
+    import requests
+    
     try:
         # Limpar contexto de outros dominios
         state.metadata.pop("tracking_url", None)
@@ -53,9 +113,22 @@ def action_search_products(
             state.metadata["search_error"] = "missing_search_query"
             state.bump_frustration()
         else:
-            results = client.search_products(query=query, limit=5)
+            # Try RAG first (semantic search)
+            results = _search_with_rag(tenant, query, limit=5)
+            search_method = "rag"
+            
+            # Fallback to REST API if RAG didn't return results
+            if results is None:
+                results = _search_with_rest_api(tenant, query, limit=5)
+                search_method = "rest_api"
+            
             state.selected_products = results
             state.metadata["search_results_count"] = len(results)
+            state.metadata["search_method"] = search_method
+            
+            if os.getenv("DEBUG"):
+                print(f"[Search] Method: {search_method}, Results: {len(results)}")
+            
             if not results:
                 state.last_action_success = False
                 state.metadata["search_error"] = "no_results"

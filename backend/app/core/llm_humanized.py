@@ -368,10 +368,20 @@ def _build_context_prompt(
         for idx, product in enumerate(state.selected_products, start=1):
             title = product.get("title") or "Produto"
             price = _format_price(product.get("price"))
+            desc = product.get("description", "")
+            # Clean HTML from description
+            if desc:
+                import re
+                desc = re.sub(r'<[^>]+>', '', desc).strip()[:200]
+            
             if price:
                 lines.append(f"  {idx}. {title} - {price}")
             else:
                 lines.append(f"  {idx}. {title}")
+            
+            # Add description if available (helps answer questions about materials, etc.)
+            if desc:
+                lines.append(f"     ({desc})")
     else:
         lines.append("- selected_products: (none)")
 
