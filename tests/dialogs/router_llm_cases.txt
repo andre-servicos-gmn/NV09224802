@@ -1,6 +1,0 @@
-quero comprar esse colar | sales | purchase_intent | {}
-deu erro no link do checkout | sales | checkout_error | {}
-meu pedido 1001 esta parado faz 7 dias | support | order_complaint | {"order_id":"1001","tracking_complaint_days":7}
-qual o prazo de entrega? | store_qa | shipping_question | {}
-aceita pix? | store_qa | payment_question | {}
-gera de novo o link | sales | cart_retry | {}
