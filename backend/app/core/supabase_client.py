@@ -11,7 +11,10 @@ import os
 from functools import lru_cache
 from typing import Any, Optional
 
+import logging
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class SupabaseClient:
@@ -50,6 +53,19 @@ class SupabaseClient:
             TableQuery para encadear operações
         """
         return TableQuery(self, table_name)
+    
+    @property
+    def storage(self) -> "StorageClient":
+        """Acesso ao Storage."""
+        return StorageClient(self)
+
+
+class StorageClient:
+    def __init__(self, client: SupabaseClient):
+        self.client = client
+        
+    def from_(self, bucket_id: str) -> "StorageBucket":
+        return StorageBucket(self.client, bucket_id)
 
 
 class TableQuery:
@@ -66,9 +82,10 @@ class TableQuery:
         self._insert_data: Optional[dict] = None
         self._update_data: Optional[dict] = None
     
-    def select(self, columns: str = "*") -> "TableQuery":
+    def select(self, columns: str = "*", count: Optional[str] = None) -> "TableQuery":
         """Define colunas a selecionar."""
         self._select_cols = columns
+        self._count_mode = count
         return self
     
     def eq(self, column: str, value: Any) -> "TableQuery":
@@ -79,6 +96,34 @@ class TableQuery:
     def ilike(self, column: str, value: Any) -> "TableQuery":
         """Adiciona filtro case-insensitive like."""
         self._filters.append((column, "ilike", value))
+        return self
+    
+    def gt(self, column: str, value: Any) -> "TableQuery":
+        """Adiciona filtro greater than."""
+        self._filters.append((column, "gt", value))
+        return self
+
+    def gte(self, column: str, value: Any) -> "TableQuery":
+        """Adiciona filtro greater than or equal."""
+        self._filters.append((column, "gte", value))
+        return self
+
+    def lt(self, column: str, value: Any) -> "TableQuery":
+        """Adiciona filtro less than."""
+        self._filters.append((column, "lt", value))
+        return self
+
+    def lte(self, column: str, value: Any) -> "TableQuery":
+        """Adiciona filtro less than or equal."""
+        self._filters.append((column, "lte", value))
+        return self
+
+    def in_(self, column: str, values: list[Any]) -> "TableQuery":
+        """Adiciona filtro IN."""
+        # PostgREST syntax for IN: col=in.(val1,val2,val3)
+        # We need to format values list
+        val_str = f"({','.join(str(v) for v in values)})"
+        self._filters.append((column, "in", val_str))
         return self
     
     def order(self, column: str, ascending: bool = True) -> "TableQuery":
@@ -111,12 +156,19 @@ class TableQuery:
         self._update_data = data
         return self
     
+    def delete(self) -> "TableQuery":
+        """Prepara deleção de dados."""
+        self._delete = True
+        return self
+    
     def execute(self) -> "QueryResponse":
-        """Executa a query (SELECT, INSERT ou UPDATE)."""
+        """Executa a query (SELECT, INSERT, UPDATE ou DELETE)."""
         if self._insert_data is not None:
             return self._execute_insert()
         elif self._update_data is not None:
             return self._execute_update()
+        elif getattr(self, '_delete', False):
+            return self._execute_delete()
         else:
             return self._execute_select()
     
@@ -140,18 +192,46 @@ class TableQuery:
         
         headers = dict(self.client.headers)
         
+        # Add count preference if requested
+        if getattr(self, '_count_mode', None):
+            # Prefer: count=exact means we want the total count.
+            # Usually PostgREST wants 'count=exact' in the Prefer header.
+            # Existing Prefer might be 'return=representation'. We can append or replace?
+            # PostgREST allows multiple values comma separated.
+            current_prefer = headers.get("Prefer", "")
+            params_prefer = f"count={self._count_mode}"
+            if current_prefer:
+                headers["Prefer"] = f"{current_prefer},{params_prefer}"
+            else:
+                headers["Prefer"] = params_prefer
+        
         response = httpx.get(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
         
         data = response.json()
+        
+        # Parse count from Content-Range header
+        # Format: 0-24/35 or */35
+        content_range = response.headers.get("Content-Range")
+        count = None
+        if content_range and "/" in content_range:
+            try:
+                total = content_range.split("/")[-1]
+                if total != "*":
+                    count = int(total)
+            except ValueError:
+                pass
+                
         # Pass raw data to QueryResponse, which now handles dict->list conversion
-        return QueryResponse(data)
+        return QueryResponse(data, count=count)
     
     def _execute_insert(self) -> "QueryResponse":
         """Executa INSERT."""
         url = f"{self.client.url}/rest/v1/{self.table_name}"
         
         headers = dict(self.client.headers)
+        # Ensure we get the inserted data back
+        headers["Prefer"] = "return=representation"
         
         data = self._insert_data
         if not isinstance(data, list):
@@ -177,6 +257,26 @@ class TableQuery:
         response.raise_for_status()
         
         result = response.json()
+        return QueryResponse(result)
+    
+    def _execute_delete(self) -> "QueryResponse":
+        """Executa DELETE."""
+        url = f"{self.client.url}/rest/v1/{self.table_name}"
+        
+        params: dict[str, str] = {}
+        for col, op, val in self._filters:
+            params[col] = f"{op}.{val}"
+        
+        headers = dict(self.client.headers)
+        
+        response = httpx.delete(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # DELETE may return empty body on success
+        try:
+            result = response.json()
+        except Exception:
+            result = []
         return QueryResponse(result)
     
     def upsert(self, data: dict, on_conflict: Optional[str] = None) -> "TableQuery":
@@ -209,16 +309,59 @@ class TableQuery:
         return QueryResponse(response.json())
 
 
+
+class StorageBucket:
+    """Cliente para operações em bucket do Storage."""
+    
+    def __init__(self, client: SupabaseClient, bucket_id: str) -> None:
+        self.client = client
+        self.bucket_id = bucket_id
+    
+    def upload(self, path: str, file: bytes, content_type: str = "application/octet-stream", upsert: str = "false") -> "QueryResponse":
+        """
+        Upload arquivo para o bucket.
+        """
+        # Endpoint: POST /storage/v1/object/{bucket}/{path}
+        # But for supabase-py compat, path usually includes folders
+        
+        url = f"{self.client.url}/storage/v1/object/{self.bucket_id}/{path}"
+        
+        headers = dict(self.client.headers)
+        headers["Content-Type"] = content_type
+        headers["x-upsert"] = upsert
+        
+        response = httpx.post(url, content=file, headers=headers, timeout=30)
+        
+        if response.status_code not in (200, 201):
+             # Try to parse error
+             try:
+                 err = response.json()
+             except:
+                 err = response.text
+             logger.error(f"Storage Upload Failed: {response.status_code} - {err}")
+             response.raise_for_status()
+             
+        # Return public URL usually? Or just Key
+        # The key is usually returned in JSON: {"Key": "bucket/path"}
+        return QueryResponse(response.json())
+
+    def get_public_url(self, path: str) -> str:
+        """Retorna URL pública do arquivo."""
+        # Endpoint: /storage/v1/object/public/{bucket}/{path}
+        return f"{self.client.url}/storage/v1/object/public/{self.bucket_id}/{path}"
+
+
 class QueryResponse:
     """Resposta de uma query Supabase."""
     
-    def __init__(self, data: Any) -> None:
+    def __init__(self, data: Any, count: Optional[int] = None) -> None:
         if isinstance(data, list):
             self.data = data
         elif isinstance(data, dict):
             self.data = [data]
         else:
             self.data = []
+        self.count = count
 
 
 @lru_cache(maxsize=1)

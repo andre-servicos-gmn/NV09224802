@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabase/client";
 
 type LoginState = "BOOT" | "ASK_ID" | "WAIT_ID" | "ASK_PASS" | "WAIT_PASS" | "VERIFY" | "SUCCESS" | "FAIL";
 
@@ -12,7 +13,7 @@ export default function LoginPage() {
     const [state, setState] = useState<LoginState>("BOOT");
     const [systemMessage, setSystemMessage] = useState("");
     const [inputValue, setInputValue] = useState("");
-    const [username, setUsername] = useState("");
+    const [email, setEmail] = useState("");
     const inputRef = useRef<HTMLInputElement>(null);
 
     // Auto-focus input when needed
@@ -22,56 +23,134 @@ export default function LoginPage() {
         }
     }, [state]);
 
-    // Typewriter Effect Logic
-    const typeMessage = async (text: string, nextState: LoginState, delay = 30) => {
-        setSystemMessage("");
-        setInputValue(""); // Clear user input
-
-        await new Promise(r => setTimeout(r, 500)); // Initial pause
-
-        for (let i = 0; i < text.length; i++) {
-            setSystemMessage(prev => prev + text.charAt(i));
-            await new Promise(r => setTimeout(r, delay + Math.random() * 20)); // Random typing variance
-        }
-
-        setState(nextState);
-    };
-
-    // State Machine Orchestrator
+    // State Machine Orchestrator with Cancellation
     useEffect(() => {
+        let cancelled = false;
+
+        const runTypewriter = async (text: string, nextState: LoginState | null, delay = 30) => {
+            setSystemMessage("");
+            setInputValue("");
+
+            await new Promise(r => setTimeout(r, 500));
+            if (cancelled) return;
+
+            for (let i = 0; i < text.length; i++) {
+                if (cancelled) return;
+                setSystemMessage(prev => prev + text.charAt(i));
+                await new Promise(r => setTimeout(r, delay + Math.random() * 20)); // Random typing variance
+            }
+
+            if (nextState && !cancelled) {
+                setState(nextState);
+            }
+        };
+
         if (state === "BOOT") {
-            typeMessage("Sistema Nouvaris online. Identifique-se.", "WAIT_ID");
+            runTypewriter("Sistema Nouvaris online. Identifique-se com seu e-mail.", "WAIT_ID");
         } else if (state === "ASK_PASS") {
-            typeMessage(`Olá, ${username}. Chave de acesso necessaria.`, "WAIT_PASS");
+            runTypewriter(`Olá. Chave de acesso necessaria.`, "WAIT_PASS");
         } else if (state === "VERIFY") {
             verifyCredentials();
         } else if (state === "SUCCESS") {
-            typeMessage("Acesso autorizado. Carregando ambiente...", "DONE" as LoginState);
+            runTypewriter("Acesso autorizado. Carregando ambiente...", "DONE" as LoginState);
             setTimeout(() => router.push("/dashboard"), 2500);
         } else if (state === "FAIL") {
-            typeMessage("Acesso negado. Tente novamente.", "WAIT_PASS");
+            runTypewriter("Acesso negado. Tente novamente.", "WAIT_PASS");
         }
-    }, [state]);
+
+        return () => {
+            cancelled = true;
+        };
+    }, [state, router]);
 
     const verifyCredentials = async () => {
         setSystemMessage("Verificando...");
-        await new Promise(r => setTimeout(r, 1500)); // Fake network delay
 
-        if (inputValue === "nouva") {
-            setState("SUCCESS");
-        } else {
+        try {
+            // 1. Try Supabase Auth
+            const { data, error } = await supabase.auth.signInWithPassword({
+                email: email,
+                password: inputValue
+            });
+
+            if (error) {
+                console.error("Auth error:", error);
+                if (error.message.includes("Invalid login")) {
+                    setSystemMessage("Credenciais inválidas.");
+                } else {
+                    setSystemMessage("Erro de autenticação.");
+                }
+                setState("FAIL");
+                return;
+            }
+
+            if (data.user) {
+                // 2. Fetch Tenant ID associated with user
+                const { data: userData, error: userError } = await supabase
+                    .from("users")
+                    .select("tenant_id")
+                    .eq("id", data.user.id)
+                    .single();
+
+                if (userData?.tenant_id) {
+                    localStorage.setItem("nouva_tenant_id", userData.tenant_id);
+                    setState("SUCCESS");
+                } else {
+                    console.error("User missing tenant:", userError);
+                    setSystemMessage("Usuário sem organização.");
+                    setState("FAIL");
+                }
+            }
+        } catch (err) {
+            console.error("Login exception:", err);
             setState("FAIL");
         }
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!inputValue.trim()) return;
 
         if (state === "WAIT_ID") {
-            setUsername(inputValue.trim());
+            const input = inputValue.trim();
+            // Email Validation
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(input)) {
+                setSystemMessage("Formato de e-mail inválido.");
+                return;
+            }
+
+            // Check if email exists in backend
+            setSystemMessage("Verificando e-mail...");
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+            try {
+                const res = await fetch("http://127.0.0.1:8000/auth/check-email", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email: input }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (!data.exists) {
+                        setSystemMessage("E-mail não encontrado.");
+                        return;
+                    }
+                }
+            } catch (err) {
+                clearTimeout(timeoutId);
+                console.error("Check email error", err);
+            }
+
+            setEmail(input);
             setState("ASK_PASS");
-        } else if (state === "WAIT_PASS" || state === "FAIL") { // Allow retry from FAIL state
+        } else if (state === "WAIT_PASS" || state === "FAIL") {
             setState("VERIFY");
         }
     };
@@ -113,17 +192,12 @@ export default function LoginPage() {
                                 "text-white placeholder:text-zinc-700",
                                 state === "FAIL" && "text-red-400 border-red-500/50"
                             )}
-                            placeholder={state === "WAIT_ID" ? "Digite seu usuário..." : "********"}
+                            placeholder={state === "WAIT_ID" ? "Digite seu e-mail..." : "********"}
                             autoComplete="off"
                             spellCheck={false}
                         />
 
-                        {/* Hint for Password */}
-                        {(state === "WAIT_PASS" || state === "FAIL") && (
-                            <p className="absolute -bottom-8 left-0 right-0 text-center text-[10px] text-zinc-700 transition-opacity opacity-0 group-focus-within:opacity-100">
-                                Dica: <span className="text-zinc-600">nouva</span>
-                            </p>
-                        )}
+
                     </form>
                 )}
 

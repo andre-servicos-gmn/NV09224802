@@ -10,6 +10,7 @@ import re
 import requests
 
 from app.core.tenancy import TenantConfig
+from app.core.state import ConversationState
 from app.tools.shopify_client import ShopifyClient
 
 

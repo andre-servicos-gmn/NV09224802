@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
     Card,
@@ -20,11 +20,16 @@ import {
     Sparkles,
     Settings2,
     MessageSquare,
+    Loader2,
+    X,
+    AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/components/ui/toast";
+import { useTenant } from "@/contexts/tenant-context";
 
-// Mock data
-const mockAgents = [
+// Agent data (no mock files - loaded from Supabase)
+const initialAgents = [
     {
         id: "sales",
         name: "Consultor de Vendas",
@@ -32,7 +37,7 @@ const mockAgents = [
         status: "active",
         model: "GPT-4 Turbo",
         prompt: "Você é um consultor de vendas experiente e persuasivo da Nouva. Seu objetivo é entender as necessidades do cliente e oferecer a melhor solução de IA para o negócio dele. Seja profissional, mas amigável. Sempre foque no ROI.",
-        files: ["catalogo_produtos_2024.pdf", "precos_q1.pdf"],
+        personalityId: "professional",
     },
     {
         id: "support",
@@ -41,7 +46,7 @@ const mockAgents = [
         status: "active",
         model: "Claude 3.5 Sonnet",
         prompt: "Você é um especialista em suporte técnico nível 1. Ajude os usuários a resolver problemas básicos de configuração e acesso. Seja paciente e didático. Se não souber a resposta, escale para o humano.",
-        files: ["manual_usuario.pdf", "troubleshooting_guide.pdf"],
+        personalityId: "friendly",
     },
     {
         id: "faq",
@@ -50,28 +55,230 @@ const mockAgents = [
         status: "inactive",
         model: "GPT-3.5 Turbo",
         prompt: "Você responde apenas perguntas frequentes baseadas na base de conhecimento. Seja direto e conciso.",
-        files: ["faq_site.pdf"],
+        personalityId: "direct",
     },
 ];
 
+// Mapping from backend brand_voice to frontend personalityId
+const BRAND_VOICE_MAP: Record<string, string> = {
+    "profissional": "professional",
+    "amigavel": "friendly",
+    "conversacional": "conversational",
+    "direto": "direct",
+    // Reverse mapping for safety
+    "professional": "professional",
+    "friendly": "friendly",
+    "conversational": "conversational",
+    "direct": "direct"
+};
+
+interface KnowledgeFile {
+    filename: string;
+    chunks: number;
+    category: string;
+}
+
 export default function AgentsPage() {
-    const [selectedAgentId, setSelectedAgentId] = useState(mockAgents[0].id);
-    const [agents, setAgents] = useState(mockAgents);
+    const [selectedAgentId, setSelectedAgentId] = useState(initialAgents[0].id);
+    const [agents, setAgents] = useState(initialAgents);
     const [chatInput, setChatInput] = useState("");
-    const [chatHistory, setChatHistory] = useState([
-        { role: "agent", content: "Olá! Como posso ajudar você hoje?" },
-    ]);
-    const [activeTab, setActiveTab] = useState<"list" | "config" | "chat">("list");
+    const [chatHistory, setChatHistory] = useState<{ role: string, content: string }[]>([]);
+    const [activeTab, setActiveTab] = useState<"config" | "chat">("config");
+    const [isUploading, setIsUploading] = useState(false);
+    const [deletingFile, setDeletingFile] = useState<string | null>(null);
+    const [knowledgeFiles, setKnowledgeFiles] = useState<KnowledgeFile[]>([]);
+    const [isLoadingFiles, setIsLoadingFiles] = useState(true);
+    const [showDeactivateConfirm, setShowDeactivateConfirm] = useState(false);
+    const [pendingDeactivateId, setPendingDeactivateId] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const { showToast } = useToast();
+    const { tenantId } = useTenant();
+
+    // Fetch knowledge base files on mount
+    const fetchKnowledgeFiles = async () => {
+        try {
+            const res = await fetch(`http://127.0.0.1:8000/list-knowledge?tenant_id=${tenantId}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success) {
+                    setKnowledgeFiles(data.files);
+                }
+            }
+        } catch (error) {
+            console.error("Failed to fetch knowledge files:", error);
+        } finally {
+            setIsLoadingFiles(false);
+        }
+    };
+
+    // Fetch tenant settings (status and personality)
+    const fetchTenantSettings = async () => {
+        try {
+            const res = await fetch(`http://127.0.0.1:8000/tenant/${tenantId}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success && data.data) {
+                    const { active, brand_voice } = data.data;
+                    const personalityId = BRAND_VOICE_MAP[brand_voice] || "professional";
+
+                    // Update agents state to reflect real settings
+                    setAgents(prev => prev.map(a => ({
+                        ...a,
+                        status: active ? "active" : "inactive",
+                        personalityId: personalityId
+                    })));
+                }
+            }
+        } catch (error) {
+            console.error("Failed to fetch tenant settings:", error);
+        }
+    };
+
+    // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount
+    React.useEffect(() => {
+        if (tenantId) {
+            fetchKnowledgeFiles();
+            fetchTenantSettings();
+        }
+    }, [tenantId]);
 
     const selectedAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
 
-    const toggleAgentStatus = (id: string) => {
-        setAgents(agents.map(agent => {
-            if (agent.id === id) {
-                return { ...agent, status: agent.status === "active" ? "inactive" : "active" };
+    const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        setIsUploading(true);
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("file", file);
+        formData.append("tenant_id", tenantId);
+        formData.append("category", "manual");
+
+        try {
+            const res = await fetch("http://127.0.0.1:8000/upload", {
+                method: "POST",
+                body: formData,
+            });
+
+            if (!res.ok) {
+                const errData = await res.json();
+                console.error("Upload Error:", errData);
+                showToast("error", errData.detail || "Erro no upload");
+                return;
             }
-            return agent;
-        }));
+
+            const data = await res.json();
+            console.log("Upload success:", data);
+
+            // Refresh the files list from backend
+            await fetchKnowledgeFiles();
+
+            showToast("success", `Arquivo processado! ${data.chunks_created} chunks criados.`);
+        } catch (error) {
+            console.error("Upload failed:", error);
+            showToast("error", "Falha no upload. Backend offline?");
+        } finally {
+            setIsUploading(false);
+            // Reset file input
+            if (fileInputRef.current) {
+                fileInputRef.current.value = "";
+            }
+        }
+    };
+
+    const handleDeleteFile = async (filename: string) => {
+        setDeletingFile(filename);
+
+        try {
+            const res = await fetch("http://127.0.0.1:8000/delete-knowledge", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    filename: filename,
+                    tenant_id: tenantId
+                })
+            });
+
+            const data = await res.json();
+
+            if (!res.ok || !data.success) {
+                showToast("error", data.message || "Erro ao excluir arquivo");
+                return;
+            }
+
+            // Refresh the files list from backend
+            await fetchKnowledgeFiles();
+
+            showToast("success", `${filename} removido (${data.deleted_count} chunks)`);
+        } catch (error) {
+            console.error("Delete failed:", error);
+            showToast("error", "Falha ao excluir. Backend offline?");
+        } finally {
+            setDeletingFile(null);
+        }
+    };
+
+    const toggleAgentStatus = async (id: string) => {
+        const agent = agents.find(a => a.id === id);
+        if (!agent) return;
+
+        const newStatus = agent.status === "active" ? false : true;
+
+        // If deactivating, show confirmation dialog
+        if (!newStatus) {
+            setPendingDeactivateId(id);
+            setShowDeactivateConfirm(true);
+            return;
+        }
+
+        // Activating - proceed directly
+        await performStatusChange(id, true);
+    };
+
+    const performStatusChange = async (id: string, newStatus: boolean) => {
+        // Optimistic update
+        setAgents(agents.map(a => a.id === id ? { ...a, status: newStatus ? "active" : "inactive" } : a));
+
+        try {
+            const res = await fetch("http://127.0.0.1:8000/update-tenant", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    tenant_id: tenantId,
+                    active: newStatus
+                })
+            });
+
+            if (!res.ok) {
+                throw new Error("Failed to update status");
+            }
+
+            const data = await res.json();
+            if (data.success) {
+                showToast("success", `Agente ${newStatus ? "ativado" : "desativado"} com sucesso`);
+            } else {
+                throw new Error(data.message);
+            }
+        } catch (error) {
+            console.error("Failed to update status:", error);
+            showToast("error", "Erro ao atualizar status do agente");
+            // Revert optimistic update
+            setAgents(agents.map(a => a.id === id ? { ...a, status: !newStatus ? "active" : "inactive" } : a));
+        }
+    };
+
+    const confirmDeactivate = async () => {
+        if (pendingDeactivateId) {
+            await performStatusChange(pendingDeactivateId, false);
+        }
+        setShowDeactivateConfirm(false);
+        setPendingDeactivateId(null);
+    };
+
+    const cancelDeactivate = () => {
+        setShowDeactivateConfirm(false);
+        setPendingDeactivateId(null);
     };
 
     const handleAgentSelect = (id: string) => {
@@ -81,36 +288,99 @@ export default function AgentsPage() {
         }
     };
 
-    const handleSendMessage = () => {
+    const handleSendMessage = async () => {
         if (!chatInput.trim()) return;
 
-        const newHistory = [...chatHistory, { role: "user", content: chatInput }];
+        const userMsg = { role: "user", content: chatInput };
+        const newHistory = [...chatHistory, userMsg];
         setChatHistory(newHistory);
         setChatInput("");
 
-        // Simulate response
-        setTimeout(() => {
-            setChatHistory([
-                ...newHistory,
-                { role: "agent", content: "Esta é uma resposta simulada do agente baseada no seu input." }
-            ]);
-        }, 1000);
+        // Use sessionId from localStorage or create new one
+        let sessionId = localStorage.getItem("playground_session_id");
+        if (!sessionId) {
+            sessionId = crypto.randomUUID().replace(/-/g, '');
+            localStorage.setItem("playground_session_id", sessionId);
+        }
+
+        try {
+            const res = await fetch("http://127.0.0.1:8000/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    message: userMsg.content,
+                    session_id: sessionId,
+                    tenant_id: tenantId, // Dynamic Tenant
+                    personality_id: (selectedAgent as any).personalityId || "professional",
+                    is_playground: true // Bypass agent status check
+                })
+            });
+
+            if (!res.ok) {
+                const errData = await res.json();
+                console.error("API Error Response:", errData);
+                throw new Error(errData.detail || "API Error");
+            }
+
+            const data = await res.json();
+            setChatHistory(prev => [...prev, { role: "agent", content: data.response }]);
+        } catch (error) {
+            console.error("Fetch error:", error);
+            setChatHistory(prev => [...prev, { role: "agent", content: `Erro: ${(error as any).message}` }]);
+        }
     };
 
     return (
         <div className="h-[calc(100vh-140px)] md:h-[calc(100vh-120px)] flex flex-col md:flex-row gap-6 relative">
 
+            {/* Deactivate Confirmation Modal */}
+            {showDeactivateConfirm && (
+                <div
+                    className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 transition-opacity duration-300"
+                    style={{ animation: 'fadeIn 0.2s ease-out' }}
+                >
+                    <div
+                        className="bg-[#111113] border border-white/[0.08] rounded-2xl max-w-md w-full shadow-2xl"
+                        style={{ animation: 'slideUp 0.3s ease-out' }}
+                    >
+                        <div className="p-6">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="h-10 w-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                                    <AlertTriangle className="h-5 w-5 text-amber-500" />
+                                </div>
+                                <h3 className="text-lg font-semibold text-white">Desativar Agente</h3>
+                            </div>
+                            <p className="text-sm text-zinc-400 leading-relaxed">
+                                Ao desativar este agente, ele será desligado em <span className="text-zinc-200 font-medium">todos os canais integrados</span> onde está conectado (WhatsApp, Telegram, etc).
+                            </p>
+                            <p className="text-sm text-zinc-500 mt-3">
+                                O Playground desta página continuará funcionando normalmente para testes.
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-white/[0.06] bg-white/[0.02]">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={cancelDeactivate}
+                                className="border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                            >
+                                Cancelar
+                            </Button>
+                            <Button
+                                size="sm"
+                                onClick={confirmDeactivate}
+                                className="bg-red-600 hover:bg-red-500 text-white"
+                            >
+                                Desativar
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Mobile Tab Navigation */}
             <div className="md:hidden flex items-center p-1 bg-white/[0.03] border border-white/[0.06] rounded-lg mb-2 shrink-0">
-                <button
-                    onClick={() => setActiveTab("list")}
-                    className={cn(
-                        "flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all",
-                        activeTab === "list" ? "bg-indigo-500 text-white shadow-sm" : "text-zinc-500"
-                    )}
-                >
-                    Agentes
-                </button>
+
                 <button
                     onClick={() => setActiveTab("config")}
                     className={cn(
@@ -131,64 +401,11 @@ export default function AgentsPage() {
                 </button>
             </div>
 
-            {/* Left Sidebar: Agent List */}
-            <div className={cn(
-                "w-full md:w-[280px] shrink-0 flex flex-col gap-4 transition-all",
-                activeTab === "list" ? "flex" : "hidden md:flex"
-            )}>
-                <div className="flex items-center justify-between px-2">
-                    <h2 className="text-sm font-medium text-zinc-400">Seus Agentes</h2>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-400">
-                        <Bot className="h-4 w-4" />
-                    </Button>
-                </div>
 
-                <div className="space-y-2 overflow-y-auto no-scrollbar md:pr-2 pb-20 md:pb-0">
-                    {agents.map((agent) => (
-                        <div
-                            key={agent.id}
-                            onClick={() => handleAgentSelect(agent.id)}
-                            className={cn(
-                                "group relative p-3 rounded-xl border transition-all cursor-pointer hover:shadow-lg",
-                                selectedAgentId === agent.id
-                                    ? "bg-[#161618] border-indigo-500/20 shadow-[0_4px_20px_-4px_rgba(99,102,241,0.1)]"
-                                    : "bg-[#0b0b0d] border-transparent hover:border-white/[0.06] hover:bg-[#121214]"
-                            )}
-                        >
-                            <div className="flex items-center justify-between mb-2">
-                                <span className={cn(
-                                    "text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-md",
-                                    selectedAgentId === agent.id
-                                        ? "bg-indigo-500/10 text-indigo-400"
-                                        : "bg-white/[0.04] text-zinc-500"
-                                )}>
-                                    {agent.role}
-                                </span>
-                                <div className={cn(
-                                    "h-2 w-2 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]",
-                                    agent.status === "active" ? "bg-emerald-500 shadow-emerald-500/20" : "bg-zinc-700"
-                                )} />
-                            </div>
-                            <h3 className={cn(
-                                "font-medium text-sm mb-1",
-                                selectedAgentId === agent.id ? "text-white" : "text-zinc-400 group-hover:text-zinc-200"
-                            )}>
-                                {agent.name}
-                            </h3>
-                            <p className="text-[11px] text-zinc-600 truncate">
-                                {agent.model}
-                            </p>
-                        </div>
-                    ))}
-
-                    <button className="w-full py-3 rounded-xl border border-dashed border-zinc-800 text-zinc-600 text-sm font-medium hover:bg-white/[0.02] hover:border-zinc-700 hover:text-zinc-400 transition-all flex items-center justify-center gap-2">
-                        + Novo Agente
-                    </button>
-                </div>
-            </div>
 
             {/* Middle: Configuration */}
             <div className={cn(
+                "flex-1 min-w-0 flex-col gap-6 overflow-y-auto md:pr-2 pb-20 md:pb-0",
                 "flex-1 min-w-0 flex-col gap-6 overflow-y-auto md:pr-2 pb-20 md:pb-0",
                 activeTab === "config" ? "flex" : "hidden md:flex"
             )}>
@@ -196,10 +413,6 @@ export default function AgentsPage() {
                 <div className="flex items-center justify-between p-1">
                     <div>
                         <h1 className="text-xl md:text-2xl font-semibold text-white tracking-tight">{selectedAgent.name}</h1>
-                        <p className="text-sm text-zinc-500 flex items-center gap-2 mt-1">
-                            <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-                            {selectedAgent.model}
-                        </p>
                     </div>
 
                     <div className="flex items-center gap-2 md:gap-3">
@@ -218,32 +431,102 @@ export default function AgentsPage() {
                                 )} />
                             </button>
                         </div>
-                        <Button variant="outline" size="icon" className="h-9 w-9 border-white/[0.06] bg-transparent text-zinc-400 hover:text-white">
-                            <Settings2 className="h-4 w-4" />
-                        </Button>
                     </div>
                 </div>
 
-                {/* Prompt Section */}
+                {/* Personality Section */}
                 <Card>
                     <CardHeader className="pb-4">
                         <div className="flex items-center justify-between">
                             <div>
                                 <CardTitle className="flex items-center gap-2">
                                     <Sparkles className="h-3 w-3 text-indigo-400" />
-                                    Prompt do Sistema
+                                    Personalidade do Agente
                                 </CardTitle>
                                 <CardDescription className="mt-1">
-                                    Defina a personalidade, tom de voz e regras de comportamento.
+                                    Escolha o tom de voz e estilo de comunicação do agente.
                                 </CardDescription>
                             </div>
                         </div>
                     </CardHeader>
                     <CardContent>
-                        <textarea
-                            className="w-full h-[200px] bg-[#050505] border border-zinc-800 rounded-lg p-4 text-sm text-zinc-300 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 resize-none font-mono leading-relaxed"
-                            defaultValue={selectedAgent.prompt}
-                        />
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {[
+                                {
+                                    id: "professional",
+                                    label: "Profissional",
+                                    description: "Formal, eficiente e focado em resultados.",
+                                    prompt: "Você é um assistente profissional e corporativo. Use linguagem formal, seja objetivo e priorize a eficiência. Evite gírias ou emojis excessivos."
+                                },
+                                {
+                                    id: "friendly",
+                                    label: "Simpático",
+                                    description: "Amigável, acolhedor e usa emojis.",
+                                    prompt: "Você é um assistente super amigável e acolhedor! Use emojis 😊, seja empático e faça o cliente se sentir especial. Use linguagem casual mas respeitosa."
+                                },
+                                {
+                                    id: "conversational",
+                                    label: "Conversacional",
+                                    description: "Natural, como uma conversa no WhatsApp.",
+                                    prompt: "Aja como se estivesse conversando com um amigo no WhatsApp. Seja natural, use frases curtas e diretas. Pode usar gírias leves se apropriado ao contexto."
+                                },
+                                {
+                                    id: "direct",
+                                    label: "Direto",
+                                    description: "Respostas curtas e direto ao ponto.",
+                                    prompt: "Seja extremamente conciso. Responda apenas o que foi perguntado, sem enrolação ou cumprimentos desnecessários. Foco total na informação."
+                                }
+                            ].map((personality) => (
+                                <button
+                                    key={personality.id}
+                                    onClick={async () => {
+                                        // Optimistic update
+                                        setAgents(agents.map(a =>
+                                            a.id === selectedAgentId ? { ...a, prompt: personality.prompt, personalityId: personality.id } : a
+                                        ));
+
+                                        try {
+                                            const res = await fetch("http://127.0.0.1:8000/update-tenant", {
+                                                method: "POST",
+                                                headers: { "Content-Type": "application/json" },
+                                                body: JSON.stringify({
+                                                    tenant_id: tenantId,
+                                                    brand_voice: personality.id
+                                                })
+                                            });
+
+                                            if (!res.ok) throw new Error("Backend error");
+
+                                            showToast("success", `Personalidade alterada para: ${personality.label}`);
+                                        } catch (error) {
+                                            console.error("Failed to update personality:", error);
+                                            showToast("error", "Erro ao salvar personalidade");
+                                        }
+                                    }}
+                                    className={cn(
+                                        "flex flex-col items-start p-4 rounded-xl border transition-all text-left relative overflow-hidden group",
+                                        (selectedAgent as any).personalityId === personality.id
+                                            ? "bg-indigo-500/10 border-indigo-500/50 ring-1 ring-indigo-500/20"
+                                            : "bg-[#050505] border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/50"
+                                    )}
+                                >
+                                    <div className={cn(
+                                        "absolute top-0 right-0 w-16 h-16 bg-gradient-to-br from-indigo-500/10 to-transparent blur-xl transition-opacity",
+                                        (selectedAgent as any).personalityId === personality.id ? "opacity-100" : "opacity-0"
+                                    )} />
+
+                                    <span className={cn(
+                                        "text-sm font-medium mb-1 relative z-10",
+                                        (selectedAgent as any).personalityId === personality.id ? "text-indigo-400" : "text-zinc-200 group-hover:text-white"
+                                    )}>
+                                        {personality.label}
+                                    </span>
+                                    <span className="text-xs text-zinc-500 leading-relaxed relative z-10 group-hover:text-zinc-400">
+                                        {personality.description}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
                     </CardContent>
                 </Card>
 
@@ -260,30 +543,70 @@ export default function AgentsPage() {
                                     Documentos que o agente utilizará para responder perguntas.
                                 </CardDescription>
                             </div>
-                            <Button variant="outline" size="sm" className="h-8 text-xs border-dashed border-zinc-700 bg-transparent hover:bg-zinc-900">
-                                <Upload className="h-3 w-3 mr-2" />
-                                Upload PDF
+                            <input
+                                type="file"
+                                ref={fileInputRef}
+                                onChange={handleFileUpload}
+                                accept=".pdf,.docx,.doc,.txt"
+                                className="hidden"
+                            />
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 text-xs border-dashed border-zinc-700 bg-transparent hover:bg-zinc-900"
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={isUploading}
+                            >
+                                {isUploading ? (
+                                    <>
+                                        <Loader2 className="h-3 w-3 mr-2 animate-spin" />
+                                        Processando...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Upload className="h-3 w-3 mr-2" />
+                                        Upload Arquivo
+                                    </>
+                                )}
                             </Button>
                         </div>
                     </CardHeader>
                     <CardContent>
                         <div className="space-y-2">
-                            {selectedAgent.files.map((file, i) => (
-                                <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-[#050505] border border-zinc-800 group hover:border-zinc-700 transition-colors">
-                                    <div className="flex items-center gap-3">
-                                        <div className="h-8 w-8 rounded bg-indigo-500/10 flex items-center justify-center">
-                                            <FileText className="h-4 w-4 text-indigo-400" />
-                                        </div>
-                                        <div>
-                                            <p className="text-sm font-medium text-zinc-300 truncate max-w-[150px] md:max-w-none">{file}</p>
-                                            <p className="text-[10px] text-zinc-600 uppercase tracking-wider">Processado</p>
-                                        </div>
-                                    </div>
-                                    <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-600 hover:text-red-400 hover:bg-red-400/10 opacity-0 group-hover:opacity-100 transition-all">
-                                        <Trash2 className="h-4 w-4" />
-                                    </Button>
+                            {isLoadingFiles ? (
+                                <div className="flex items-center justify-center py-4">
+                                    <Loader2 className="h-5 w-5 animate-spin text-zinc-500" />
                                 </div>
-                            ))}
+                            ) : knowledgeFiles.length === 0 ? (
+                                <p className="text-sm text-zinc-500 text-center py-4">Nenhum arquivo carregado</p>
+                            ) : (
+                                knowledgeFiles.map((file, i) => (
+                                    <div key={file.filename} className="flex items-center justify-between p-3 rounded-lg bg-[#050505] border border-zinc-800 group hover:border-zinc-700 transition-colors">
+                                        <div className="flex items-center gap-3">
+                                            <div className="h-8 w-8 rounded bg-indigo-500/10 flex items-center justify-center">
+                                                <FileText className="h-4 w-4 text-indigo-400" />
+                                            </div>
+                                            <div>
+                                                <p className="text-sm font-medium text-zinc-300 truncate max-w-[150px] md:max-w-none">{file.filename}</p>
+                                                <p className="text-[10px] text-zinc-600 uppercase tracking-wider">{file.chunks} chunks</p>
+                                            </div>
+                                        </div>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 text-zinc-600 hover:text-red-400 hover:bg-red-400/10 opacity-0 group-hover:opacity-100 transition-all"
+                                            onClick={() => handleDeleteFile(file.filename)}
+                                            disabled={deletingFile === file.filename}
+                                        >
+                                            {deletingFile === file.filename ? (
+                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                            ) : (
+                                                <Trash2 className="h-4 w-4" />
+                                            )}
+                                        </Button>
+                                    </div>
+                                ))
+                            )}
                         </div>
                     </CardContent>
                 </Card>
