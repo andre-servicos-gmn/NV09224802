@@ -142,6 +142,11 @@ def store_qa_respond(state: ConversationState, tenant: TenantConfig) -> Conversa
     
     system_prompt = build_store_qa_prompt(tenant)
     
+    # Inject personality prompt
+    from app.core.prompts import get_personality_prompt
+    personality_instruction = get_personality_prompt(state.personality_id)
+    system_prompt += f"\n\n[Personalidade e Tom de Voz]\n{personality_instruction}"
+    
     # Build prompt based on strategy
     if state.last_strategy == "ask_one_missing":
         missing_info = state.missing_info_needed[0] if state.missing_info_needed else "mais informações"

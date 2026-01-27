@@ -53,7 +53,7 @@ def resolve_tenant_uuid(tenant_id_or_name: str) -> str:
         return result.data[0]["id"]
     
     # Default to demo tenant
-    return "00000000-0000-0000-0000-000000000001"
+    return "73ee1a5c-1160-4a51-ba34-3fdddcd49f9e"
 
 
 # =============================================================================
