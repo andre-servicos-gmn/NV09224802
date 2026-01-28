@@ -4,6 +4,8 @@ Webhook handlers for e-commerce platform integrations.
 Receives product events from platforms (Shopify, WooCommerce, etc.) and
 syncs them to the RAG vector store.
 
+Also handles WhatsApp webhooks via Evolution API.
+
 Security measures:
 - HMAC signature validation (timing-safe)
 - Tenant existence and active status verification
@@ -13,14 +15,23 @@ Security measures:
 
 import logging
 import time
+import re
+import asyncio
 from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app.adapters.shopify_adapter import ShopifyAdapter
+from app.adapters.evolution_adapter import EvolutionAdapter
+from app.adapters.whatsapp_base import WhatsAppAdapterBase
 from app.core.tenancy import TenantRegistry
 from app.sync.sync_service import SyncService
+from app.core.message_buffer import message_buffer
+from app.core.session_store import get_session, save_session
+from app.core.state import ConversationState
+# Assumed location based on grep search
+from app.graphs.main_graph import run_main_graph
 
 
 # Configure logging
@@ -29,21 +40,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 # Simple in-memory rate limiter
-# In production, use Redis or similar
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX_REQUESTS = 100  # per tenant per window
 
+# Caches for loop prevention (Anti-Echo)
+SENT_MESSAGE_HASHES: list[tuple[float, int]] = []
+PROCESSED_MESSAGE_IDS: set[str] = set()
+_processed_ids_list: list[str] = []
+MAX_PROCESSED_IDS = 1000
+
 
 def _check_rate_limit(tenant_id: str) -> bool:
-    """Check if tenant is within rate limits.
-    
-    Args:
-        tenant_id: Tenant identifier.
-        
-    Returns:
-        True if allowed, False if rate limited.
-    """
+    """Check if tenant is within rate limits."""
     now = time.time()
     window_start = now - RATE_LIMIT_WINDOW
     
@@ -62,14 +71,7 @@ def _check_rate_limit(tenant_id: str) -> bool:
 
 
 def _get_tenant_credentials(tenant_id: str) -> Optional[dict]:
-    """Get tenant credentials from registry.
-    
-    Args:
-        tenant_id: Tenant identifier (UUID or name).
-        
-    Returns:
-        Credentials dict or None if not found.
-    """
+    """Get tenant credentials from registry."""
     try:
         registry = TenantRegistry()
         tenant = registry.get(tenant_id, use_cache=False)  # No cache for security
@@ -82,12 +84,174 @@ def _get_tenant_credentials(tenant_id: str) -> Optional[dict]:
             "store_domain": tenant.store_domain,
             "access_token": tenant.shopify_access_token,
             "api_version": tenant.shopify_api_version,
-            # webhook_secret should come from DB - we'll add this
             "webhook_secret": getattr(tenant, "webhook_secret", None),
         }
     except ValueError:
         return None
 
+
+# --- WhatsApp Helper Functions ---
+
+def _check_deduplication(message_id: str) -> bool:
+    """Check if message ID was already processed. Returns True if duplicate."""
+    if not message_id:
+        return False
+    if message_id in PROCESSED_MESSAGE_IDS:
+        return True
+    
+    PROCESSED_MESSAGE_IDS.add(message_id)
+    _processed_ids_list.append(message_id)
+    
+    if len(_processed_ids_list) > MAX_PROCESSED_IDS:
+        removed = _processed_ids_list.pop(0)
+        PROCESSED_MESSAGE_IDS.discard(removed)
+        
+    return False
+
+
+def _normalize_for_loop_check(text: str) -> str:
+    """Normalize text for echo detection - remove emojis, punctuation, spaces. (Adjustment 3)"""
+    # Remove emojis (Unicode ranges)
+    text = re.sub(r'[\U0001F600-\U0001F64F]', '', text)  # Emoticons
+    text = re.sub(r'[\U0001F300-\U0001F5FF]', '', text)  # Symbols & pictographs
+    text = re.sub(r'[\U0001F680-\U0001F6FF]', '', text)  # Transport & map
+    text = re.sub(r'[\U0001F1E0-\U0001F1FF]', '', text)  # Flags
+    text = re.sub(r'[\U00002702-\U000027B0]', '', text)  # Dingbats
+    
+    # Remove punctuation and spaces
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', '', text)
+    
+    return text.lower()
+
+
+def _record_sent_message(text: str):
+    """Record a sent message hash to prevent echoing it back."""
+    global SENT_MESSAGE_HASHES
+    now = time.time()
+    # Clean old hashes (keep for 60s)
+    SENT_MESSAGE_HASHES = [(exp, h) for exp, h in SENT_MESSAGE_HASHES if exp > now]
+    
+    norm_text = _normalize_for_loop_check(text)
+    text_hash = hash(norm_text)
+    SENT_MESSAGE_HASHES.append((now + 60, text_hash))
+
+
+def _is_echo_message(text: str) -> bool:
+    """Check if text matches a recently sent message."""
+    global SENT_MESSAGE_HASHES
+    
+    norm_text = _normalize_for_loop_check(text)
+    text_hash = hash(norm_text)
+    
+    now = time.time()
+    # Clean old ones during check too
+    SENT_MESSAGE_HASHES = [(exp, h) for exp, h in SENT_MESSAGE_HASHES if exp > now]
+    
+    return any(h == text_hash for _, h in SENT_MESSAGE_HASHES)
+
+
+def _get_whatsapp_adapter(tenant) -> WhatsAppAdapterBase | None:
+    """Get WhatsApp adapter based on tenant configuration."""
+    if not getattr(tenant, "whatsapp_provider", None):
+        return None
+    
+    if tenant.whatsapp_provider == "evolution":
+        return EvolutionAdapter(
+            instance_url=tenant.whatsapp_instance_url,
+            api_key=tenant.whatsapp_api_key,
+            instance_name=tenant.whatsapp_instance_name or "default",
+        )
+    
+    return None
+
+
+async def process_consolidated_message(
+    text: str, 
+    tenant_id: str, 
+    from_number: str, 
+    message_id: str,
+    session_id: str
+):
+    """Process aggregated messages from the buffer."""
+    try:
+        # Re-fetch tenant and recreate adapter
+        registry = TenantRegistry()
+        tenant = registry.get(tenant_id, use_cache=True)
+        adapter = _get_whatsapp_adapter(tenant)
+        
+        if not adapter:
+            logger.error(f"WhatsApp adapter could not be recreated for {tenant_id}")
+            return
+
+        # Session management
+        state = get_session(tenant.tenant_id, session_id)
+        
+        if state:
+            state.last_user_message = text
+            state.add_to_history("user", text)
+        else:
+            state = ConversationState(
+                tenant_id=tenant.tenant_id,
+                session_id=session_id,
+                channel="whatsapp",
+                last_user_message=text,
+            )
+            state.add_to_history("user", text)
+        
+        # Adjustment 5: Contextual Confirmation Detection
+        # If message is simple confirmation AND bot just made an offer
+        confirmation_pattern = r'^(sim|quero|pode|ok|ta|tá|beleza|bora|yes|manda|claro|aceito)\W*$'
+        
+        if re.match(confirmation_pattern, text.lower().strip()):
+            # Check if bot asked something in previous turn
+            if state.last_bot_message and ('?' in state.last_bot_message or 
+                                           'quer' in state.last_bot_message.lower() or
+                                           'posso' in state.last_bot_message.lower()):
+                
+                logger.info(f"🎯 Detected user confirmation: '{text}' → marking as continuation")
+                
+                # Add flags for Router
+                state.metadata['user_confirmed_previous_offer'] = True
+                state.metadata['confirmation_text'] = text
+                state.metadata['is_simple_confirmation'] = True
+                
+                # Maintain current domain/intent
+                if state.domain:
+                    state.metadata['keep_current_domain'] = True
+                if state.intent and state.intent != 'general':
+                    state.metadata['keep_current_intent'] = True
+        
+        # Process with AI agent/graph
+        result_state = await run_main_graph(state, tenant)
+        
+        response_text = result_state.last_bot_message
+        
+        if response_text:
+            # Record sent message for anti-loop
+            _record_sent_message(response_text)
+            
+            # Note: run_main_graph likely adds to history, but we ensure it here if needed
+            # result_state.add_to_history("assistant", response_text) 
+            save_session(tenant.tenant_id, session_id, result_state)
+            
+            await adapter.mark_as_read(message_id)
+            
+            send_result = await adapter.send_text_message(
+                to=from_number,
+                text=response_text,
+            )
+            
+            if not send_result.success:
+                logger.error(f"Failed to send WhatsApp response: {send_result.error}")
+        else:
+            save_session(tenant.tenant_id, session_id, result_state)
+            
+    except Exception as e:
+        logger.error(f"Error processing WhatsApp message: {e}")
+
+
+# --- Endpoints ---
 
 @router.post(
     "/shopify/{tenant_id}",
@@ -102,28 +266,8 @@ async def shopify_webhook(
     x_shopify_hmac_sha256: str = Header(..., alias="X-Shopify-Hmac-SHA256"),
     x_shopify_shop_domain: str = Header(None, alias="X-Shopify-Shop-Domain"),
 ):
-    """
-    Handle Shopify webhook for product sync.
-    
-    Security:
-    - Validates HMAC signature using timing-safe comparison
-    - Verifies tenant exists and is active
-    - Rate limits requests per tenant
-    - Returns 200 OK even on errors (prevents Shopify retries/fingerprinting)
-    
-    Args:
-        request: FastAPI request object.
-        tenant_id: Tenant identifier from URL.
-        x_shopify_topic: Webhook event type (e.g., "products/create").
-        x_shopify_hmac_sha256: HMAC signature for validation.
-        x_shopify_shop_domain: Shop domain from Shopify.
-        
-    Returns:
-        Success response.
-        
-    Raises:
-        HTTPException: On authentication/validation errors.
-    """
+    """Handle Shopify webhook for product sync."""
+    # ... Existing Shopify logic ...
     # Get raw body for HMAC validation
     raw_body = await request.body()
     
@@ -148,7 +292,6 @@ async def shopify_webhook(
     webhook_secret = credentials.get("webhook_secret")
     if not webhook_secret:
         logger.error(f"Webhook secret not configured for tenant: {tenant_id[:8]}...")
-        # Still return 401 to not expose configuration issues
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid signature",
@@ -224,8 +367,6 @@ async def shopify_webhook(
         }
         
     except Exception as e:
-        # Log error but return 200 to prevent Shopify retries
-        # that could be used for timing attacks
         import traceback
         print(f"[WEBHOOK ERROR] {e}")
         traceback.print_exc()
@@ -238,6 +379,81 @@ async def shopify_webhook(
             "event": x_shopify_topic,
             "message": "Processing error",
         }
+
+
+@router.post(
+    "/whatsapp/{tenant_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Receive WhatsApp webhook events",
+)
+async def whatsapp_webhook(request: Request, tenant_id: str):
+    """Handle WhatsApp webhook for AI agent conversations."""
+    
+    # Rate limiting
+    if not _check_rate_limit(tenant_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    
+    # Get tenant config
+    try:
+        registry = TenantRegistry()
+        tenant = registry.get(tenant_id, use_cache=True)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    
+    # Get WhatsApp adapter
+    adapter = _get_whatsapp_adapter(tenant)
+    if not adapter:
+        # It's better to return 400 or just ignore if not configured
+        # But for webhook sanity we can return 200 with error message
+        return {"success": False, "error": "WhatsApp not configured for this tenant"}
+    
+    # Validate webhook
+    if not await adapter.validate_webhook(request):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    
+    # Parse payload
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    
+    # Parse incoming message
+    message = adapter.parse_incoming_message(payload)
+    if not message:
+        return {"success": True, "event": "non_message_event"}
+    
+    # Adjustment 3: Pre-buffer Checks
+    
+    # Anti-loop: Check if this is an echo (BEFORE buffering)
+    if _is_echo_message(message.text):
+        logger.info(f"Echo detected and dropped: {message.text[:50]}")
+        return {"success": True, "event": "echo_dropped"}
+    
+    # Deduplication: Check if already processed (BEFORE buffering)
+    if _check_deduplication(message.message_id):
+        logger.info(f"Duplicate message dropped: {message.message_id}")
+        return {"success": True, "event": "duplicate_dropped"}
+    
+    # Normalize session ID
+    raw_id = adapter.get_session_id() or message.from_number
+    session_id = "".join(filter(str.isdigit, str(raw_id)))
+    
+    # Buffer message and return immediately
+    await message_buffer.add_message(
+        session_id,
+        message.text,
+        process_consolidated_message,
+        tenant_id,
+        message.from_number,
+        message.message_id,
+        session_id
+    )
+    
+    return {
+        "success": True, 
+        "event": "message_buffered", 
+        "status": "processing_async"
+    }
 
 
 @router.get("/health", summary="Health check for webhook service")
