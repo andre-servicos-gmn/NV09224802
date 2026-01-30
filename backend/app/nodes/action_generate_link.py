@@ -85,6 +85,9 @@ def action_generate_link(
 
         if link:
             state.metadata["checkout_link"] = link
+            # Clear previous errors to prevent LLM confusion
+            state.metadata.pop("select_variant_error", None)
+            state.metadata.pop("checkout_error", None)
         else:
             state.metadata.pop("checkout_link", None)
 

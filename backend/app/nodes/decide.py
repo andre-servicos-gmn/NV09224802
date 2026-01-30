@@ -179,18 +179,48 @@ def _decide_with_heuristics(state: ConversationState) -> str:
     
     if state.frustration_level >= 3:
         return "handoff"
+
+    # Priority 0: FORCE LINK GENERATION if variant is selected (User Request)
+    # Direct transition: select_variant -> generate_link (SKIP RESPOND)
+    if (state.selected_variant_id 
+        and state.selected_products 
+        and len(state.selected_products) > 0
+        and state.intent not in [INTENT_SEARCH_PRODUCT, INTENT_SELECT_PRODUCT, INTENT_GREETING]
+        and state.last_action != "action_generate_link"):
+        
+        logger.info("[DECIDE] Variant selected, going DIRECTLY to generate_link")
+        return "action_generate_link"
     
-    # Priority 2: Already have variant → Generate link
+    # Priority 2: Already have variant → Generate link (Backup check)
     if state.selected_variant_id:
         return "action_generate_link"
     
+    # Priority 2.5: Product selected but needs variant choice
+    # If we have available variants but none selected, we need to handle this
+    # We trust that if available_variants is populated, we have a focus product
+    if (state.available_variants 
+        and not state.selected_variant_id):
+        
+        # If user is specifically trying to select variant or purchase
+        if state.intent in [INTENT_SELECT_VARIANT, INTENT_PURCHASE_INTENT, INTENT_SELECT_PRODUCT]:
+            return "action_select_variant"
+        else:
+            # Need to ask user which variant
+            return "respond"
+
     # Priority 3: Single variant product → Generate link directly
+    # Can happen if available_variants has exactly 1 item
+    if state.available_variants and len(state.available_variants) == 1 and not state.selected_variant_id:
+        state.selected_variant_id = state.available_variants[0]["id"]
+        state.metadata["selected_variant_title"] = state.available_variants[0]["title"]
+        return "action_generate_link"
+        
     if state.selected_products:
         first_product = state.selected_products[0]
         variants = first_product.get("variants", [])
         if len(variants) == 1:
-            # Auto-select the single variant
-            state.selected_variant_id = variants[0].get("id")
+            # Auto-select the single variant (fallback to raw data if needed)
+            state.selected_variant_id = str(variants[0].get("id"))
             return "action_generate_link"
     
     # Priority 4: Intent-based routing
@@ -207,7 +237,11 @@ def _decide_with_heuristics(state: ConversationState) -> str:
             return "action_search_products"
     
     if state.intent == INTENT_SELECT_VARIANT:
-        if state.available_variants or state.selected_products:
+        # If we have variants to choose from, go to select variant
+        if state.available_variants:
+            return "action_select_variant"
+        # If we have products but variants not populated yet
+        elif state.selected_products:
             return "action_select_variant"
         else:
             return "respond"
@@ -215,9 +249,7 @@ def _decide_with_heuristics(state: ConversationState) -> str:
     if state.intent in {INTENT_PURCHASE_INTENT, INTENT_ADD_TO_CART}:
         if state.selected_products:
             # Has products, check if needs variant selection
-            first_product = state.selected_products[0]
-            variants = first_product.get("variants", [])
-            if len(variants) > 1 and not state.selected_variant_id:
+            if state.available_variants and len(state.available_variants) > 1 and not state.selected_variant_id:
                 return "action_select_variant"
             elif state.selected_variant_id:
                 return "action_generate_link"
