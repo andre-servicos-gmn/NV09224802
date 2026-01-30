@@ -186,6 +186,17 @@ async def process_consolidated_message(
             logger.error(f"WhatsApp adapter could not be recreated for {tenant_id}")
             return
 
+        # Handle Reset Command
+        if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
+            from app.core.session_store import clear_session
+            clear_session(tenant.tenant_id, session_id)
+            logger.info(f"🔄 Session reset requested for {session_id}")
+            await adapter.send_text_message(
+                to=session_id,  # session_id is the phone number
+                text="🔄 Sessão reiniciada com sucesso. Pode começar de novo!"
+            )
+            return
+
         # Session management
         state = get_session(tenant.tenant_id, session_id)
         

@@ -287,6 +287,12 @@ Você está ajudando clientes a comprar produtos da {tenant.name}.
 "Encontrei o produto que você procurava! Quer que eu gere o link?"
 "Pronto, aqui está o link: [link]"
 "Ops, esse link deu problema. Vou gerar outro, um momento."
+
+## REGRA ESPECIAL PARA LINKS
+Se last_action = "action_generate_link" e last_action_success = True:
+- O link JÁ foi gerado e está sendo enviado junto com sua mensagem
+- NÃO pergunte "quer que eu gere o link?"
+- APENAS confirme de forma natural: "Aqui está!" ou "Pronto! 😊"
 """
 
 
@@ -396,6 +402,7 @@ def _build_additional_context(state: ConversationState) -> str:
     
     if state.last_action == "action_generate_link" and state.last_action_success:
         lines.append("✓ Você ACABOU de gerar um link de checkout. Envie-o de forma natural.")
+        lines.append("CRÍTICO: O link JÁ FOI GERADO. NÃO pergunte se quer gerar. APENAS envie.")
         checkout_link = state.metadata.get("checkout_link")
         if checkout_link:
             lines.append(f"  Link: {checkout_link}")
@@ -523,15 +530,22 @@ def _build_context_prompt(
         lines.append("- selected_products: (nenhum)")
 
     # Available variants
+    # Available variants
     if state.available_variants:
         lines.append("- available_variants:")
+        lines.append("  (IMPORTANTE: O produto tem variantes. Pergunte qual o cliente prefere)")
         for idx, variant in enumerate(state.available_variants, start=1):
             title = variant.get("title") or "Opção"
             price = _format_price(variant.get("price"))
+            available = variant.get("available", True)
+            if isinstance(available, str): 
+                available = available.lower() == "true"
+            status = "✅ Disponível" if available else "❌ Esgotado"
+            
             if price:
-                lines.append(f"  {idx}. {title} - {price}")
+                lines.append(f"  {idx}. {title} - {price} ({status})")
             else:
-                lines.append(f"  {idx}. {title}")
+                lines.append(f"  {idx}. {title} ({status})")
     else:
         lines.append("- available_variants: (nenhum)")
 

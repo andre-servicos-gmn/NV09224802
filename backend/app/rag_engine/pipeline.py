@@ -150,7 +150,9 @@ class RAGPipeline:
                 "url": p.get("url"),
                 "in_stock": p.get("in_stock", True),
                 "tags": p.get("tags", []),
-                "has_variants": False,  # Will be enriched later if needed
+                "has_variants": p.get("has_variants", False),
+                "variants_count": p.get("variants_count", 0),
+                "variants": p.get("variants", None),  # Pass full variants data
             }
             for p in products
         ]

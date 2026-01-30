@@ -29,24 +29,39 @@ def _search_with_rag(
     Returns:
         List of products or None if RAG is unavailable/empty.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"[RAG] Starting RAG search for query='{query}' tenant_uuid={tenant.uuid}")
+    
     if not tenant.uuid:
+        logger.warning("[RAG] No tenant UUID available, skipping RAG search")
         return None
     
     try:
         from app.rag_engine.pipeline import RAGPipeline
         
+        logger.info(f"[RAG] Creating RAGPipeline with tenant_id={tenant.uuid}")
         pipeline = RAGPipeline(tenant_id=tenant.uuid)
+        
+        logger.info(f"[RAG] Calling get_products_for_state('{query}', limit={limit})")
         results = pipeline.get_products_for_state(query, limit=limit)
+        
+        logger.info(f"[RAG] get_products_for_state returned {len(results) if results else 0} results")
+        
+        if results:
+            for i, p in enumerate(results[:3]):
+                logger.info(f"[RAG]   Result {i+1}: {p.get('title', 'N/A')} (in_stock={p.get('in_stock')})")
         
         # Return None if RAG returned no results (may need fallback)
         if not results:
+            logger.info("[RAG] No results, returning None for fallback")
             return None
         
         return results
         
     except Exception as e:
-        if os.getenv("DEBUG"):
-            print(f"[RAG] Search failed, falling back to REST: {e}")
+        logger.error(f"[RAG] Search failed with exception: {e}", exc_info=True)
         return None
 
 
@@ -113,18 +128,48 @@ def action_search_products(
             state.metadata["search_error"] = "missing_search_query"
             state.bump_frustration()
         else:
+            import logging
+            logger = logging.getLogger(__name__)
+            
             # Try RAG first (semantic search)
             results = _search_with_rag(tenant, query, limit=5)
             search_method = "rag"
             
-            # Fallback to REST API if RAG didn't return results
-            if results is None:
+            logger.info(f"[SEARCH] RAG returned {len(results) if results else 0} results for '{query}'")
+            
+            # Fallback to REST API if RAG didn't return results OR returned empty
+            if not results:
+                logger.info(f"[SEARCH] Falling back to REST API for '{query}'")
                 results = _search_with_rest_api(tenant, query, limit=5)
                 search_method = "rest_api"
+                logger.info(f"[SEARCH] REST API returned {len(results)} results")
             
             state.selected_products = results
             state.metadata["search_results_count"] = len(results)
             state.metadata["search_method"] = search_method
+            
+            # Check for variants in the top result
+            # We assume the first result is the most relevant one
+            if results:
+                # Always focus on the first product for variant context if it has variants
+                # This allows specific queries like "colar summer" to immediately show variants
+                product = results[0]
+                if product.get("has_variants") and product.get("variants"):
+                    state.selected_product_id = product.get("product_id")
+                    
+                    # Transform variants to simplified format for state
+                    state.available_variants = [
+                        {
+                            "id": str(v.get("id")),
+                            "title": v.get("title", ""),
+                            "price": str(v.get("price", "")),
+                            # Check inventory > 0 but keep all for display
+                            "available": int(v.get("inventory_quantity", 0)) > 0,
+                            "inventory_quantity": int(v.get("inventory_quantity", 0))
+                        }
+                        for v in product.get("variants", [])
+                    ]
+                    logger.info(f"[SEARCH] Auto-selected focus on product {product.get('title')} with {len(state.available_variants)} variants")
             
             if os.getenv("DEBUG"):
                 print(f"[Search] Method: {search_method}, Results: {len(results)}")

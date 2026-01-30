@@ -44,14 +44,22 @@ class VectorRetriever:
         Returns:
             List of product dicts with similarity scores.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"[RETRIEVER] search_products called: tenant={tenant_id}, query='{query}', limit={limit}")
+        
         if not query or not query.strip():
+            logger.warning("[RETRIEVER] Empty query, returning []")
             return []
         
         # Generate query embedding
+        logger.info(f"[RETRIEVER] Generating embedding for query: '{query}'")
         query_embedding = self.embedder.embed_text(query)
+        logger.info(f"[RETRIEVER] Got embedding vector of length {len(query_embedding)}")
         
         # Call Supabase RPC function via REST
-        return self._call_rpc(
+        result = self._call_rpc(
             "search_products_by_embedding",
             {
                 "query_embedding": query_embedding,
@@ -60,6 +68,12 @@ class VectorRetriever:
                 "only_in_stock": only_in_stock,
             }
         )
+        
+        logger.info(f"[RETRIEVER] RPC returned {len(result)} products")
+        for i, p in enumerate(result[:3]):
+            logger.info(f"[RETRIEVER]   {i+1}. {p.get('title', 'N/A')} (similarity={p.get('similarity', 'N/A'):.4f})")
+        
+        return result
     
     def _call_rpc(self, function_name: str, params: dict) -> list[dict]:
         """Call a Supabase RPC function.
@@ -71,18 +85,32 @@ class VectorRetriever:
         Returns:
             List of results from the function.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         url = f"{self.supabase.url}/rest/v1/rpc/{function_name}"
+        logger.info(f"[RETRIEVER] Calling RPC: {function_name}")
         
-        response = httpx.post(
-            url,
-            json=params,
-            headers=self.supabase.headers,
-            timeout=30,
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        return result if isinstance(result, list) else []
+        try:
+            response = httpx.post(
+                url,
+                json=params,
+                headers=self.supabase.headers,
+                timeout=30,
+            )
+            logger.info(f"[RETRIEVER] RPC response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                logger.error(f"[RETRIEVER] RPC error response: {response.text[:500]}")
+            
+            response.raise_for_status()
+            
+            result = response.json()
+            return result if isinstance(result, list) else []
+            
+        except Exception as e:
+            logger.error(f"[RETRIEVER] RPC call failed: {e}", exc_info=True)
+            raise
     
     def get_product_by_external_id(
         self,

@@ -96,7 +96,14 @@ class TableQuery:
         return self
     
     def ilike(self, column: str, value: Any) -> "TableQuery":
-        """Adiciona filtro case-insensitive like."""
+        """Adiciona filtro case-insensitive like.
+        
+        PostgREST uses * as wildcard character, not %.
+        This method converts % to * automatically for convenience.
+        """
+        # PostgREST uses * instead of % for wildcards in ilike
+        if isinstance(value, str):
+            value = value.replace("%", "*")
         self._filters.append((column, "ilike", value))
         return self
     
