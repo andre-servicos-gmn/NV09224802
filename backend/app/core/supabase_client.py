@@ -187,9 +187,7 @@ class TableQuery:
         # Pass raw data to QueryResponse, which now handles dict->list conversion
         return QueryResponse(data)
 
-# @lru_cache(maxsize=1)
-def get_supabase() -> SupabaseClient:
-    
+
     def _execute_insert(self) -> "QueryResponse":
         """Executa INSERT."""
         url = f"{self.client.url}/rest/v1/{self.table_name}"
