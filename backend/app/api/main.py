@@ -122,6 +122,9 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Register routers
 app.include_router(webhooks_router)
 
+@app.post("/test-post")
+async def test_post():
+    return {"status": "ok"}
 
 # Root endpoint
 @app.get("/", summary="API root")

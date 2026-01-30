@@ -111,6 +111,17 @@ class TableQuery:
         self._update_data = data
         return self
     
+    async def execute_async(self) -> "QueryResponse":
+        """Executa a query de forma assíncrona (apenas SELECT por enquanto)."""
+        if self._insert_data is not None:
+            # Implement insert async if needed later
+            raise NotImplementedError("Async Insert not implemented yet")
+        elif self._update_data is not None:
+             # Implement update async if needed later
+            raise NotImplementedError("Async Update not implemented yet")
+        else:
+            return await self._execute_select_async()
+
     def execute(self) -> "QueryResponse":
         """Executa a query (SELECT, INSERT ou UPDATE)."""
         if self._insert_data is not None:
@@ -120,6 +131,34 @@ class TableQuery:
         else:
             return self._execute_select()
     
+    async def _execute_select_async(self) -> "QueryResponse":
+        """Executa SELECT assíncrono."""
+        url = f"{self.client.url}/rest/v1/{self.table_name}"
+        
+        params: dict[str, str] = {"select": self._select_cols}
+        for col, op, val in self._filters:
+            params[col] = f"{op}.{val}"
+        
+        if self._order_by:
+            col, asc = self._order_by
+            params["order"] = f"{col}.{'asc' if asc else 'desc'}"
+        
+        # Use limit=1 for single() instead of special Accept header
+        if self._single and not self._limit_val:
+            params["limit"] = "1"
+        elif self._limit_val:
+            params["limit"] = str(self._limit_val)
+        
+        headers = dict(self.client.headers)
+        
+        # Use async context for request
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers=headers, timeout=30)
+            response.raise_for_status()
+        
+        data = response.json()
+        return QueryResponse(data)
+
     def _execute_select(self) -> "QueryResponse":
         """Executa SELECT."""
         url = f"{self.client.url}/rest/v1/{self.table_name}"
@@ -140,12 +179,16 @@ class TableQuery:
         
         headers = dict(self.client.headers)
         
-        response = httpx.get(url, params=params, headers=headers, timeout=10)
+        # Reverting debug logs to clean state
+        response = httpx.get(url, params=params, headers=headers, timeout=30)
         response.raise_for_status()
         
         data = response.json()
         # Pass raw data to QueryResponse, which now handles dict->list conversion
         return QueryResponse(data)
+
+# @lru_cache(maxsize=1)
+def get_supabase() -> SupabaseClient:
     
     def _execute_insert(self) -> "QueryResponse":
         """Executa INSERT."""
