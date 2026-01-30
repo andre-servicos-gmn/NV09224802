@@ -122,6 +122,7 @@ class TableQuery:
 
     def in_(self, column: str, values: list[Any]) -> "TableQuery":
         """Adiciona filtro IN."""
+        # PostgREST syntax for IN: col=in.(val1,val2,val3)
         val_str = f"({','.join(str(v) for v in values)})"
         self._filters.append((column, "in", val_str))
         return self
@@ -229,6 +230,8 @@ class TableQuery:
         headers = dict(self.client.headers)
         
         # Add count preference if requested
+        # Prefer: count=exact means we want the total count.
+        # PostgREST allows multiple values comma separated.
         if self._count_mode:
             current_prefer = headers.get("Prefer", "")
             params_prefer = f"count={self._count_mode}"
@@ -243,6 +246,7 @@ class TableQuery:
         data = response.json()
         
         # Parse count from Content-Range header
+        # Format: 0-24/35 or */35
         content_range = response.headers.get("Content-Range")
         count = None
         if content_range and "/" in content_range:
@@ -252,7 +256,8 @@ class TableQuery:
                     count = int(total)
             except ValueError:
                 pass
-                
+        
+        # Pass raw data to QueryResponse, which now handles dict->list conversion
         return QueryResponse(data, count=count)
     
     def _execute_insert(self) -> "QueryResponse":
@@ -260,6 +265,7 @@ class TableQuery:
         url = f"{self.client.url}/rest/v1/{self.table_name}"
         
         headers = dict(self.client.headers)
+        # Ensure we get the inserted data back
         headers["Prefer"] = "return=representation"
         
         data = self._insert_data
@@ -301,6 +307,7 @@ class TableQuery:
         response = httpx.delete(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
         
+        # DELETE may return empty body on success
         try:
             result = response.json()
         except Exception:
@@ -345,6 +352,7 @@ class StorageBucket:
     
     def upload(self, path: str, file: bytes, content_type: str = "application/octet-stream", upsert: str = "false") -> "QueryResponse":
         """Upload arquivo para o bucket."""
+        # Endpoint: POST /storage/v1/object/{bucket}/{path}
         url = f"{self.client.url}/storage/v1/object/{self.bucket_id}/{path}"
         
         headers = dict(self.client.headers)
@@ -360,11 +368,13 @@ class StorageBucket:
                 err = response.text
             logger.error(f"Storage Upload Failed: {response.status_code} - {err}")
             response.raise_for_status()
-             
+        
+        # The key is usually returned in JSON: {"Key": "bucket/path"}
         return QueryResponse(response.json())
 
     def get_public_url(self, path: str) -> str:
         """Retorna URL pública do arquivo."""
+        # Endpoint: /storage/v1/object/public/{bucket}/{path}
         return f"{self.client.url}/storage/v1/object/public/{self.bucket_id}/{path}"
 
 

@@ -28,6 +28,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.api.webhooks import router as webhooks_router
+from app.api.chat import router as chat_router
+from app.api.upload import router as upload_router
+from app.api.tenants import router as tenants_router
 
 
 # Configure logging
@@ -62,22 +65,23 @@ ALLOWED_ORIGINS = [
     "https://nouvaris.com",
     "https://app.nouvaris.com",
     "https://dashboard.nouvaris.com",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
 ]
 
 # Add localhost for development
 if os.getenv("DEBUG"):
     ALLOWED_ORIGINS.extend([
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8000",
+        # Extra debug origins if needed
     ])
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],  # Restrict to needed methods only
+    allow_methods=["*"],  # Allow all methods including OPTIONS
     allow_headers=["*"],
 )
 
@@ -119,8 +123,14 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+from app.api.auth import router as auth_router
+
 # Register routers
 app.include_router(webhooks_router)
+app.include_router(chat_router)
+app.include_router(upload_router)
+app.include_router(tenants_router)
+app.include_router(auth_router)
 
 @app.post("/test-post")
 async def test_post():
@@ -134,6 +144,8 @@ async def root():
         "service": "Nouvaris API",
         "version": "1.0.0",
         "status": "running",
+        "reloaded": True,
+        "v": 2
     }
 
 

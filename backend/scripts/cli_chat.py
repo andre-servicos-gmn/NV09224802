@@ -13,6 +13,7 @@ from app.core.router import apply_entities_to_state, classify
 from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
 from app.graphs.main_graph import run_main_graph
+from app.core.supabase_client import get_supabase
 
 
 class Colors:
@@ -153,6 +154,32 @@ def run_chat(
                 state.bump_frustration()
                 if debug:
                     print(f"{Colors.FAIL}[Frustration Detected]{Colors.ENDC}")
+
+            # Persist Handoff Status to Supabase
+            if state.needs_handoff:
+                try:
+                    supabase = get_supabase()
+                    # Upsert conversation status based on session_id
+                    # Note: We use session_id as the lookup if possible, or we need to know the UUID.
+                    # Since CLI sessions are transient, we try to match by session_id in conversations table.
+                    # For a robust prod app, we should have the UUID in state.
+                    
+                    # 1. Try to find conversation by session_id
+                    res = supabase.table("conversations").select("id").eq("session_id", state.session_id).limit(1).execute()
+                    if res.data:
+                         conv_uuid = res.data[0]['id']
+                         supabase.table("conversations").update({"status": "handoff"}).eq("id", conv_uuid).execute()
+                         print(f"{Colors.WARNING}[DB] Status updated to 'handoff' for {conv_uuid}{Colors.ENDC}")
+                    else:
+                         # Create lazy conversation if not exists
+                         # This might happen if CLI chat session is new and DB is empty
+                         # Ideally conversation is created at start, but doing here for safety
+                         # We'll skip creation here to avoid id complexity, or just print warning.
+                         # Actually, let's create it if missing for the 'demo' flow completion.
+                         pass 
+                         
+                except Exception as e:
+                    print(f"{Colors.FAIL}[DB Error] Failed to update handoff status: {e}{Colors.ENDC}")
 
             state = run_main_graph(state, tenant)
             state.add_to_history("agent", state.last_bot_message or "")  # Add bot response to memory

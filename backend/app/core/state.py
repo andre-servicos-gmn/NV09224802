@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 class ConversationState(BaseModel):
     tenant_id: str
     session_id: str
+    personality_id: str = "professional"
     channel: str = "whatsapp"
     domain: str | None = None
     intent: str = "general"
