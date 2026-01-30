@@ -1,5 +1,6 @@
 """Evolution API adapter for WhatsApp integration.
-Implements the WhatsAppAdapterBase for Evolution API.
+
+Simplified version with proper LID (Linked Device ID) handling.
 Documentation: https://doc.evolution-api.com/
 """
 import logging
@@ -14,11 +15,6 @@ from app.adapters.whatsapp_base import (
 
 logger = logging.getLogger(__name__)
 
-# Cache para mapear LID (Linked Device IDs) para números reais
-# Problema: WhatsApp Web/Desktop usa LID em vez do número real
-LID_PHONE_CACHE: dict[str, str] = {}
-PUSHNAME_PHONE_CACHE: dict[str, str] = {}
-
 
 class EvolutionAdapter(WhatsAppAdapterBase):
     """Evolution API implementation of WhatsApp adapter."""
@@ -32,44 +28,18 @@ class EvolutionAdapter(WhatsAppAdapterBase):
         super().__init__(instance_url, api_key, instance_name)
         self._client = httpx.AsyncClient(
             base_url=self.instance_url,
-            headers={
-                "apikey": self.api_key,
-                "Content-Type": "application/json",
-            },
+            headers={"apikey": self.api_key, "Content-Type": "application/json"},
             timeout=30.0,
         )
+        self._session_phone: Optional[str] = None
     
     async def validate_webhook(self, request: Request) -> bool:
-        """Validate incoming webhook request.
-        
-        Evolution API currently does not require HMAC validation by default.
-        """
+        """Evolution API does not require HMAC validation by default."""
         return True
     
     def parse_incoming_message(self, payload: dict) -> Optional[WhatsAppMessage]:
-        """Parse Evolution API MESSAGES_UPSERT event into standardized message.
-        
-        Evolution API payload structure for MESSAGES_UPSERT:
-        {
-            "event": "messages.upsert",
-            "instance": "instance_name",
-            "data": {
-                "key": {
-                    "remoteJid": "5511999999999@s.whatsapp.net",
-                    "fromMe": false,
-                    "id": "message_id"
-                },
-                "pushName": "John",
-                "message": {
-                    "conversation": "Hello"  # or "extendedTextMessage": {"text": "..."}
-                },
-                "messageTimestamp": 1234567890
-            }
-        }
-        """
+        """Parse Evolution API MESSAGES_UPSERT event into standardized message."""
         event = payload.get("event", "")
-        
-        # Only process message events
         if event not in ("messages.upsert", "MESSAGES_UPSERT"):
             return None
         
@@ -77,68 +47,65 @@ class EvolutionAdapter(WhatsAppAdapterBase):
         key = data.get("key", {})
         message_content = data.get("message", {})
         
-        # Skip messages sent by us (fromMe=true)
-        is_from_me = key.get("fromMe", False)
-        if str(is_from_me).lower() == "true" or is_from_me is True:
-            logger.info(f"Ignoring message fromMe={is_from_me}")
+        # Skip messages sent by us
+        if key.get("fromMe") in (True, "true"):
             return None
         
         remote_jid = key.get("remoteJid", "")
-        
-        # Ignore status updates
         if "status@broadcast" in remote_jid:
             return None
         
-        push_name = data.get("pushName", "")
-        target_jid = remote_jid
+        # --- PHONE NUMBER EXTRACTION ---
+        # Priority: senderPn > remoteJidAlt > extract from remoteJid
+        phone = None
         
-        # Handle LID vs Phone number resolution
-        if "@s.whatsapp.net" in remote_jid:
-            phone_jid = remote_jid
-            if push_name:
-                PUSHNAME_PHONE_CACHE[push_name] = phone_jid
-            target_jid = phone_jid
-        elif "@lid" in remote_jid:
-            # Try to resolve LID to real phone number
-            if remote_jid in LID_PHONE_CACHE:
-                target_jid = LID_PHONE_CACHE[remote_jid]
-            elif push_name and push_name in PUSHNAME_PHONE_CACHE:
-                target_jid = PUSHNAME_PHONE_CACHE[push_name]
-                LID_PHONE_CACHE[remote_jid] = target_jid
-            else:
-                logger.warning(f"Cannot resolve LID {remote_jid}")
-                target_jid = remote_jid
+        # 1. senderPn (Best for LID resolution)
+        sender_pn = data.get("senderPn") or payload.get("senderPn")
+        if sender_pn:
+            phone = sender_pn
+            logger.info(f"📱 Phone from senderPn: {phone}")
         
-        # Extract phone number from JID
-        if "@lid" in target_jid:
-            from_number = target_jid
-        else:
-            from_number = target_jid.split("@")[0] if "@" in target_jid else target_jid
+        # 2. remoteJidAlt (Alternative JID field)
+        if not phone:
+            alt_jid = key.get("remoteJidAlt") or data.get("remoteJidAlt")
+            if alt_jid and "@s.whatsapp.net" in alt_jid:
+                phone = alt_jid.replace("@s.whatsapp.net", "")
+                logger.info(f"📱 Phone from remoteJidAlt: {phone}")
         
-        self._resolved_session_id = from_number
+        # 3. Extract from remoteJid (only if not LID)
+        if not phone and "@s.whatsapp.net" in remote_jid:
+            phone = remote_jid.replace("@s.whatsapp.net", "")
+            logger.info(f"📱 Phone from remoteJid: {phone}")
         
-        # Extract text content
-        text = ""
-        if "conversation" in message_content:
-            text = message_content["conversation"]
-        elif "extendedTextMessage" in message_content:
-            text = message_content["extendedTextMessage"].get("text", "")
-        elif "imageMessage" in message_content:
-            text = "[IMAGE]"
-        elif "audioMessage" in message_content:
-            text = "[AUDIO]"
-        elif "videoMessage" in message_content:
-            text = "[VIDEO]"
-        elif "documentMessage" in message_content:
-            text = "[DOCUMENT]"
+        # 4. LID fallback - use it directly (will fail on send, but at least logs)
+        if not phone and "@lid" in remote_jid:
+            phone = remote_jid
+            logger.warning(f"⚠️ Using LID as fallback (may fail on send): {phone}")
+        
+        if not phone:
+            logger.error("❌ Could not extract phone number from payload")
+            return None
+        
+        self._session_phone = phone
+        
+        # --- TEXT EXTRACTION ---
+        text = message_content.get("conversation")
+        if not text:
+            text = message_content.get("extendedTextMessage", {}).get("text")
+        if not text:
+            # Check for media messages
+            media_types = ["imageMessage", "audioMessage", "videoMessage", "documentMessage"]
+            if any(k in message_content for k in media_types):
+                text = "[MEDIA]"
         
         if not text:
+            logger.debug("No text content in message")
             return None
         
         return WhatsAppMessage(
             message_id=key.get("id", ""),
-            from_number=from_number,
-            to_number=self.instance_name,
+            from_number=phone,
+            to_number=phone,  # Reply destination
             text=text,
             timestamp=data.get("messageTimestamp", 0),
             is_group="@g.us" in remote_jid,
@@ -147,42 +114,41 @@ class EvolutionAdapter(WhatsAppAdapterBase):
         )
     
     def get_session_id(self) -> str | None:
-        """Return the normalized session ID (real phone number when possible)."""
-        return getattr(self, "_resolved_session_id", None)
+        """Return the phone number for session tracking."""
+        return self._session_phone
     
     async def send_text_message(self, to: str, text: str) -> WhatsAppSendResult:
         """Send a text message via Evolution API."""
         try:
-            if "@" in to:
-                number = to
-            else:
-                number = to.replace("+", "").replace("-", "").replace(" ", "")
+            # Clean phone number
+            number = to.replace("@s.whatsapp.net", "").replace("@lid", "")
+            number = number.replace("+", "").replace("-", "").replace(" ", "")
+            
+            logger.info(f"📤 Sending to: {number}")
             
             response = await self._client.post(
                 f"/message/sendText/{self.instance_name}",
-                json={
-                    "number": number,
-                    "text": text,
-                },
+                json={"number": number, "text": text},
             )
             
             if response.status_code in (200, 201):
                 data = response.json()
+                logger.info(f"✅ Sent! ID: {data.get('key', {}).get('id')}")
                 return WhatsAppSendResult(
                     success=True,
                     message_id=data.get("key", {}).get("id"),
                 )
             else:
-                logger.error(f"Evolution API error: {response.status_code} - {response.text}")
+                logger.error(f"❌ Send failed: {response.status_code} - {response.text}")
                 return WhatsAppSendResult(
                     success=False,
                     error=f"HTTP {response.status_code}: {response.text}",
                 )
                 
         except Exception as e:
-            logger.exception(f"Error sending message via Evolution API: {e}")
+            logger.exception(f"❌ Error sending: {e}")
             return WhatsAppSendResult(success=False, error=str(e))
-    
+
     async def send_media_message(
         self,
         to: str,
@@ -192,21 +158,10 @@ class EvolutionAdapter(WhatsAppAdapterBase):
     ) -> WhatsAppSendResult:
         """Send a media message via Evolution API."""
         try:
-            if "@" in to:
-                number = to
-            else:
-                number = to.replace("+", "").replace("-", "").replace(" ", "")
-            
-            endpoint_map = {
-                "image": "sendMedia",
-                "audio": "sendWhatsAppAudio",
-                "video": "sendMedia",
-                "document": "sendMedia",
-            }
-            endpoint = endpoint_map.get(media_type, "sendMedia")
+            number = to.replace("@s.whatsapp.net", "").replace("+", "").replace("-", "").replace(" ", "")
             
             response = await self._client.post(
-                f"/message/{endpoint}/{self.instance_name}",
+                f"/message/sendMedia/{self.instance_name}",
                 json={
                     "number": number,
                     "mediatype": media_type,
@@ -228,15 +183,15 @@ class EvolutionAdapter(WhatsAppAdapterBase):
                 )
                 
         except Exception as e:
-            logger.exception(f"Error sending media via Evolution API: {e}")
+            logger.exception(f"Error sending media: {e}")
             return WhatsAppSendResult(success=False, error=str(e))
     
     async def mark_as_read(self, message_id: str) -> bool:
-        """Mark a message as read via Evolution API."""
+        """Mark a message as read."""
         try:
             response = await self._client.post(
                 f"/chat/markMessageAsRead/{self.instance_name}",
-                json={"id": message_id},
+                json={"readMessages": [message_id]},
             )
             return response.status_code in (200, 201)
         except Exception:

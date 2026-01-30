@@ -32,6 +32,8 @@ from app.core.session_store import get_session, save_session
 from app.core.state import ConversationState
 # Assumed location based on grep search
 from app.graphs.main_graph import run_main_graph
+from app.core.constants import FRUSTRATION_KEYWORDS
+from app.core.router import apply_entities_to_state, classify
 
 
 # Configure logging
@@ -222,8 +224,53 @@ async def process_consolidated_message(
                 if state.intent and state.intent != 'general':
                     state.metadata['keep_current_intent'] = True
         
+        # Prepare context for Router
+        context = {
+            "tenant_id": state.tenant_id,
+            "session_id": state.session_id,
+            "last_domain": state.domain,
+            "last_intent": state.intent,
+            "has_variant_id": bool(state.selected_variant_id),
+            "has_order_id": bool(state.order_id),
+            "has_selected_products": bool(state.selected_products),
+            "selected_products_count": len(state.selected_products) if state.selected_products else 0,
+            "store_name": tenant.name,
+            "store_niche": tenant.store_niche or "loja online",
+        }
+        
+        # Add product titles to context for better routing
+        if state.selected_products:
+            titles = [p.get("title", "") for p in state.selected_products[:3]]
+            context["last_products_discussed"] = ", ".join(titles)
+
+        # Run Classification (Router)
+        # This was missing! Without this, the agent never updated intent/domain based on new input.
+        decision = classify(text, context=context, use_llm=True)
+        
+        # Apply decision to state
+        state.set_intent(decision.intent)
+        
+        # Only switch domain if not forcing current one (e.g. simple confirmation)
+        if not state.metadata.get('keep_current_domain'):
+            state.domain = decision.domain
+        
+        apply_entities_to_state(state, decision.entities)
+        
+        state.sentiment_level = decision.sentiment_level
+        state.sentiment_score = decision.sentiment_score
+        state.needs_handoff = decision.needs_handoff
+        state.handoff_reason = decision.handoff_reason
+        
+        # Frustration Check
+        def _has_frustration(msg_text):
+            return any(k in msg_text.lower() for k in FRUSTRATION_KEYWORDS)
+
+        if decision.sentiment_level != "calm" or _has_frustration(text):
+            state.bump_frustration()
+            # If high frustration, force handoff potentially? (Handled by graph policies usually)
+
         # Process with AI agent/graph
-        result_state = await run_main_graph(state, tenant)
+        result_state = await asyncio.to_thread(run_main_graph, state, tenant)
         
         response_text = result_state.last_bot_message
         
@@ -388,23 +435,20 @@ async def shopify_webhook(
 )
 async def whatsapp_webhook(request: Request, tenant_id: str):
     """Handle WhatsApp webhook for AI agent conversations."""
-    
     # Rate limiting
     if not _check_rate_limit(tenant_id):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     
-    # Get tenant config
+    # Get tenant config (Async)
     try:
         registry = TenantRegistry()
-        tenant = registry.get(tenant_id, use_cache=True)
+        tenant = await registry.get_async(tenant_id, use_cache=True)
     except ValueError:
         raise HTTPException(status_code=404, detail="Tenant not found")
     
     # Get WhatsApp adapter
     adapter = _get_whatsapp_adapter(tenant)
     if not adapter:
-        # It's better to return 400 or just ignore if not configured
-        # But for webhook sanity we can return 200 with error message
         return {"success": False, "error": "WhatsApp not configured for this tenant"}
     
     # Validate webhook
@@ -422,14 +466,11 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     if not message:
         return {"success": True, "event": "non_message_event"}
     
-    # Adjustment 3: Pre-buffer Checks
-    
-    # Anti-loop: Check if this is an echo (BEFORE buffering)
+    # Anti-loop & Deduplication checks
     if _is_echo_message(message.text):
         logger.info(f"Echo detected and dropped: {message.text[:50]}")
         return {"success": True, "event": "echo_dropped"}
     
-    # Deduplication: Check if already processed (BEFORE buffering)
     if _check_deduplication(message.message_id):
         logger.info(f"Duplicate message dropped: {message.message_id}")
         return {"success": True, "event": "duplicate_dropped"}
@@ -438,7 +479,7 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     raw_id = adapter.get_session_id() or message.from_number
     session_id = "".join(filter(str.isdigit, str(raw_id)))
     
-    # Buffer message and return immediately
+    # Buffer message
     await message_buffer.add_message(
         session_id,
         message.text,

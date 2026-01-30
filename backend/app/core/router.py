@@ -30,7 +30,7 @@ from .constants import (
     SUPPORTED_DOMAINS,
     SUPPORTED_INTENTS,
 )
-from .router_llm import classify_with_llm
+from .router_llm import classify_with_llm, classify_heuristic, MIN_CONFIDENCE, HIGH_CONFIDENCE
 from .sentiment import analyze_sentiment_llm
 
 CACHE_TTL_SECONDS = 120.0
@@ -233,20 +233,22 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
         if cached:
             return cached
 
-    # Media Check heuristic
-    if message.strip().upper().startswith(("[AUDIO]", "[IMAGE]", "[VIDEO]")):
+    # Quick heuristic classification for obvious patterns (saves LLM call)
+    heuristic_result = classify_heuristic(message, context)
+    if heuristic_result:
+        sentiment = analyze_sentiment_llm(message)
         return RouterDecision(
-            domain="general",
-            intent=INTENT_MEDIA_UNSUPPORTED,
-            entities={},
-            confidence=1.0,
+            domain=heuristic_result.domain,
+            intent=heuristic_result.intent,
+            entities=heuristic_result.entities,
+            confidence=heuristic_result.confidence,
             used_fallback=False,
-            reason="heuristic_media",
-            sentiment_level="calm",
-            sentiment_score=0.0,
-            needs_handoff=False,
-            handoff_reason=None,
-            used_sentiment_llm=False,
+            reason=f"heuristic_{heuristic_result.rationale}",
+            sentiment_level=sentiment["sentiment_level"],
+            sentiment_score=sentiment["sentiment_score"],
+            needs_handoff=sentiment["needs_handoff"],
+            handoff_reason=sentiment["handoff_reason"],
+            used_sentiment_llm=True,
         )
 
     sentiment = analyze_sentiment_llm(message)
@@ -259,9 +261,10 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
                 raise ValueError("Unsupported intent from LLM.")
             if result.ambiguous:
                 raise ValueError("LLM ambiguous.")
-            if result.confidence < 0.65:
-                raise ValueError("LLM confidence too low.")
-            if result.confidence < 0.8 and not sanity_check(
+            # Use new thresholds from router_llm
+            if result.confidence < MIN_CONFIDENCE:
+                raise ValueError(f"LLM confidence {result.confidence} < {MIN_CONFIDENCE}")
+            if result.confidence < HIGH_CONFIDENCE and not sanity_check(
                 result.domain, result.intent, result.entities, message
             ):
                 raise ValueError("LLM sanity check failed.")

@@ -1,0 +1,45 @@
+{
+  "payload": {
+    "event": "messages.upsert",
+    "instance": "nouvaris",
+    "data": {
+      "key": {
+        "remoteJid": "5511954499030@s.whatsapp.net",
+        "fromMe": false,
+        "id": "3EB0D726362F4E57F2E486"
+      },
+      "pushName": "Andr\u00e9 Tudorov",
+      "status": "DELIVERY_ACK",
+      "message": {
+        "conversation": "oi",
+        "messageContextInfo": {
+          "deviceListMetadata": {
+            "senderKeyHash": "ZuvkMBr4GBdP1A==",
+            "senderTimestamp": "1769193703",
+            "senderAccountType": "E2EE",
+            "receiverAccountType": "E2EE",
+            "recipientKeyHash": "DOeFHkckHZuv1g==",
+            "recipientTimestamp": "1768253413"
+          },
+          "deviceListMetadataVersion": 2,
+          "messageSecret": "j7cOipVgETS0hk4NMavHlc+vtMadS8L80TnPLuGc7to="
+        }
+      },
+      "messageType": "conversation",
+      "messageTimestamp": 1769708330,
+      "instanceId": "f39cbf68-5f12-4e9f-9201-f2be7cabdbf1",
+      "source": "web"
+    },
+    "destination": "https://stereoscopic-immutably-emely.ngrok-free.dev/webhooks/whatsapp/demo",
+    "date_time": "2026-01-29T14:38:50.394Z",
+    "sender": "5511951733692@s.whatsapp.net",
+    "server_url": "https://nouvaris-evolution-api.ojdb99.easypanel.host",
+    "apikey": "08310608DCDB-4B13-A4BB-B2A4D1C80706"
+  },
+  "resolution": {
+    "remote_jid": "5511954499030@s.whatsapp.net",
+    "real_sender": "5511951733692@s.whatsapp.net",
+    "target_jid": "5511951733692@s.whatsapp.net",
+    "from_number": "5511951733692"
+  }
+}

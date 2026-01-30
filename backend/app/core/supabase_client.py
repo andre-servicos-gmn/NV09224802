@@ -81,6 +81,8 @@ class TableQuery:
         self._limit_val: Optional[int] = None
         self._insert_data: Optional[dict] = None
         self._update_data: Optional[dict] = None
+        self._delete = False
+        self._count_mode: Optional[str] = None
     
     def select(self, columns: str = "*", count: Optional[str] = None) -> "TableQuery":
         """Define colunas a selecionar."""
@@ -121,7 +123,6 @@ class TableQuery:
     def in_(self, column: str, values: list[Any]) -> "TableQuery":
         """Adiciona filtro IN."""
         # PostgREST syntax for IN: col=in.(val1,val2,val3)
-        # We need to format values list
         val_str = f"({','.join(str(v) for v in values)})"
         self._filters.append((column, "in", val_str))
         return self
@@ -161,17 +162,54 @@ class TableQuery:
         self._delete = True
         return self
     
+    async def execute_async(self) -> "QueryResponse":
+        """Executa a query de forma assíncrona (apenas SELECT por enquanto)."""
+        if self._insert_data is not None:
+            raise NotImplementedError("Async Insert not implemented yet")
+        elif self._update_data is not None:
+            raise NotImplementedError("Async Update not implemented yet")
+        elif self._delete:
+            raise NotImplementedError("Async Delete not implemented yet")
+        else:
+            return await self._execute_select_async()
+
     def execute(self) -> "QueryResponse":
         """Executa a query (SELECT, INSERT, UPDATE ou DELETE)."""
         if self._insert_data is not None:
             return self._execute_insert()
         elif self._update_data is not None:
             return self._execute_update()
-        elif getattr(self, '_delete', False):
+        elif self._delete:
             return self._execute_delete()
         else:
             return self._execute_select()
     
+    async def _execute_select_async(self) -> "QueryResponse":
+        """Executa SELECT assíncrono."""
+        url = f"{self.client.url}/rest/v1/{self.table_name}"
+        
+        params: dict[str, str] = {"select": self._select_cols}
+        for col, op, val in self._filters:
+            params[col] = f"{op}.{val}"
+        
+        if self._order_by:
+            col, asc = self._order_by
+            params["order"] = f"{col}.{'asc' if asc else 'desc'}"
+        
+        if self._single and not self._limit_val:
+            params["limit"] = "1"
+        elif self._limit_val:
+            params["limit"] = str(self._limit_val)
+        
+        headers = dict(self.client.headers)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers=headers, timeout=30)
+            response.raise_for_status()
+        
+        data = response.json()
+        return QueryResponse(data)
+
     def _execute_select(self) -> "QueryResponse":
         """Executa SELECT."""
         url = f"{self.client.url}/rest/v1/{self.table_name}"
@@ -184,7 +222,6 @@ class TableQuery:
             col, asc = self._order_by
             params["order"] = f"{col}.{'asc' if asc else 'desc'}"
         
-        # Use limit=1 for single() instead of special Accept header
         if self._single and not self._limit_val:
             params["limit"] = "1"
         elif self._limit_val:
@@ -193,11 +230,9 @@ class TableQuery:
         headers = dict(self.client.headers)
         
         # Add count preference if requested
-        if getattr(self, '_count_mode', None):
-            # Prefer: count=exact means we want the total count.
-            # Usually PostgREST wants 'count=exact' in the Prefer header.
-            # Existing Prefer might be 'return=representation'. We can append or replace?
-            # PostgREST allows multiple values comma separated.
+        # Prefer: count=exact means we want the total count.
+        # PostgREST allows multiple values comma separated.
+        if self._count_mode:
             current_prefer = headers.get("Prefer", "")
             params_prefer = f"count={self._count_mode}"
             if current_prefer:
@@ -205,7 +240,7 @@ class TableQuery:
             else:
                 headers["Prefer"] = params_prefer
         
-        response = httpx.get(url, params=params, headers=headers, timeout=10)
+        response = httpx.get(url, params=params, headers=headers, timeout=30)
         response.raise_for_status()
         
         data = response.json()
@@ -221,7 +256,7 @@ class TableQuery:
                     count = int(total)
             except ValueError:
                 pass
-                
+        
         # Pass raw data to QueryResponse, which now handles dict->list conversion
         return QueryResponse(data, count=count)
     
@@ -292,7 +327,6 @@ class TableQuery:
         headers = dict(self.client.headers)
         headers["Prefer"] = "resolution=merge-duplicates,return=representation"
         
-        # Add on_conflict parameter if specified
         params = {}
         if hasattr(self, '_on_conflict') and self._on_conflict:
             params["on_conflict"] = self._on_conflict
@@ -302,12 +336,11 @@ class TableQuery:
             params=params,
             json=self._upsert_data if isinstance(self._upsert_data, list) else [self._upsert_data],
             headers=headers,
-            timeout=30  # Increased timeout for embedding operations
+            timeout=30
         )
         response.raise_for_status()
         
         return QueryResponse(response.json())
-
 
 
 class StorageBucket:
@@ -318,12 +351,8 @@ class StorageBucket:
         self.bucket_id = bucket_id
     
     def upload(self, path: str, file: bytes, content_type: str = "application/octet-stream", upsert: str = "false") -> "QueryResponse":
-        """
-        Upload arquivo para o bucket.
-        """
+        """Upload arquivo para o bucket."""
         # Endpoint: POST /storage/v1/object/{bucket}/{path}
-        # But for supabase-py compat, path usually includes folders
-        
         url = f"{self.client.url}/storage/v1/object/{self.bucket_id}/{path}"
         
         headers = dict(self.client.headers)
@@ -333,15 +362,13 @@ class StorageBucket:
         response = httpx.post(url, content=file, headers=headers, timeout=30)
         
         if response.status_code not in (200, 201):
-             # Try to parse error
-             try:
-                 err = response.json()
-             except:
-                 err = response.text
-             logger.error(f"Storage Upload Failed: {response.status_code} - {err}")
-             response.raise_for_status()
-             
-        # Return public URL usually? Or just Key
+            try:
+                err = response.json()
+            except:
+                err = response.text
+            logger.error(f"Storage Upload Failed: {response.status_code} - {err}")
+            response.raise_for_status()
+        
         # The key is usually returned in JSON: {"Key": "bucket/path"}
         return QueryResponse(response.json())
 
