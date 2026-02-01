@@ -10,6 +10,7 @@ from app.core.router import apply_entities_to_state, classify
 from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
 from app.core.supabase_client import get_supabase
+from app.core.database import get_or_create_conversation, save_message
 from app.graphs.main_graph import run_main_graph
 
 # Configure logging
@@ -114,7 +115,28 @@ async def chat_endpoint(request: ChatRequest):
     state.last_user_message = message
     state.add_to_history("user", message)
 
-    # 3.1 Classification
+    # 3.1 Get or create conversation for message persistence
+    conversation_id = None
+    try:
+        conversation = get_or_create_conversation(
+            tenant_id=tenant.uuid or tenant.tenant_id,
+            session_id=session_id,
+            channel="web"
+        )
+        conversation_id = conversation.get("id")
+        
+        # Save user message
+        if conversation_id:
+            save_message(
+                conversation_id=conversation_id,
+                sender_type="user",
+                content=message,
+                domain=state.domain
+            )
+    except Exception as e:
+        logger.warning(f"Failed to save user message: {e}")
+
+    # 3.2 Classification
     context = {
         "tenant_id": state.tenant_id,
         "session_id": state.session_id,
@@ -136,6 +158,14 @@ async def chat_endpoint(request: ChatRequest):
          # Update status in DB
          try:
              supabase.table("conversations").update({"status": "handoff"}).eq("session_id", session_id).execute()
+             # Save handoff system event
+             if conversation_id:
+                 save_message(
+                     conversation_id=conversation_id,
+                     sender_type="system",
+                     content=f"Handoff requested: {decision.handoff_reason or 'escalation'}",
+                     metadata={"event": "handoff"}
+                 )
          except Exception as e:
              logger.error(f"Failed to update handoff status: {e}")
 
@@ -145,10 +175,29 @@ async def chat_endpoint(request: ChatRequest):
     # Add bot response to history
     state.add_to_history("agent", state.last_bot_message or "")
 
+    # 4.1 Save agent message
+    try:
+        if conversation_id and state.last_bot_message:
+            save_message(
+                conversation_id=conversation_id,
+                sender_type="agent",
+                content=state.last_bot_message,
+                intent=state.intent,
+                domain=state.domain,
+                metadata={
+                    "action": state.last_action,
+                    "strategy": state.last_strategy,
+                }
+            )
+    except Exception as e:
+        logger.warning(f"Failed to save agent message: {e}")
+
     # 5. Persist State
     try:
         supabase.table("conversations").update({
-            "metadata": state.model_dump(mode='json')
+            "metadata": state.model_dump(mode='json'),
+            "domain": state.domain,
+            "frustration_level": state.frustration_level,
         }).eq("session_id", session_id).execute()
     except Exception as e:
         logger.error(f"Failed to persist state: {e}")

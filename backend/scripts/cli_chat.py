@@ -8,12 +8,16 @@ from typing import NoReturn
 
 from dotenv import load_dotenv
 
+# Add project root to sys.path to allow running from scripts dir
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
 from app.core.constants import FRUSTRATION_KEYWORDS
 from app.core.router import apply_entities_to_state, classify
 from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
 from app.graphs.main_graph import run_main_graph
 from app.core.supabase_client import get_supabase
+from app.core.database import get_or_create_conversation, save_message
 
 
 class Colors:
@@ -125,6 +129,31 @@ def run_chat(
             # Logic Flow
             state.last_user_message = message
             state.add_to_history("user", message)  # Add to conversation memory
+            
+            # Get or create conversation for message persistence
+            conversation_id = None
+            try:
+                conversation = get_or_create_conversation(
+                    tenant_id=tenant.uuid or tenant.tenant_id,
+                    session_id=session_id,
+                    channel="cli"
+                )
+                conversation_id = conversation.get("id")
+                
+                # Save user message
+                if conversation_id:
+                    save_message(
+                        conversation_id=conversation_id,
+                        sender_type="user",
+                        content=message,
+                        domain=state.domain
+                    )
+                    if debug:
+                        print(f"{Colors.CYAN}[DB] Saved user message{Colors.ENDC}")
+            except Exception as e:
+                if debug:
+                    print(f"{Colors.FAIL}[DB Error] Failed to save user message: {e}{Colors.ENDC}")
+            
             context = {
                 "tenant_id": state.tenant_id,
                 "session_id": state.session_id,
@@ -159,30 +188,42 @@ def run_chat(
             if state.needs_handoff:
                 try:
                     supabase = get_supabase()
-                    # Upsert conversation status based on session_id
-                    # Note: We use session_id as the lookup if possible, or we need to know the UUID.
-                    # Since CLI sessions are transient, we try to match by session_id in conversations table.
-                    # For a robust prod app, we should have the UUID in state.
+                    supabase.table("conversations").update({"status": "handoff"}).eq("session_id", state.session_id).execute()
+                    print(f"{Colors.WARNING}[DB] Status updated to 'handoff'{Colors.ENDC}")
                     
-                    # 1. Try to find conversation by session_id
-                    res = supabase.table("conversations").select("id").eq("session_id", state.session_id).limit(1).execute()
-                    if res.data:
-                         conv_uuid = res.data[0]['id']
-                         supabase.table("conversations").update({"status": "handoff"}).eq("id", conv_uuid).execute()
-                         print(f"{Colors.WARNING}[DB] Status updated to 'handoff' for {conv_uuid}{Colors.ENDC}")
-                    else:
-                         # Create lazy conversation if not exists
-                         # This might happen if CLI chat session is new and DB is empty
-                         # Ideally conversation is created at start, but doing here for safety
-                         # We'll skip creation here to avoid id complexity, or just print warning.
-                         # Actually, let's create it if missing for the 'demo' flow completion.
-                         pass 
-                         
+                    # Save handoff system event
+                    if conversation_id:
+                        save_message(
+                            conversation_id=conversation_id,
+                            sender_type="system",
+                            content=f"Handoff requested: {state.handoff_reason or 'escalation'}",
+                            metadata={"event": "handoff"}
+                        )
                 except Exception as e:
                     print(f"{Colors.FAIL}[DB Error] Failed to update handoff status: {e}{Colors.ENDC}")
 
             state = run_main_graph(state, tenant)
             state.add_to_history("agent", state.last_bot_message or "")  # Add bot response to memory
+            
+            # Save agent message
+            try:
+                if conversation_id and state.last_bot_message:
+                    save_message(
+                        conversation_id=conversation_id,
+                        sender_type="agent",
+                        content=state.last_bot_message,
+                        intent=state.intent,
+                        domain=state.domain,
+                        metadata={
+                            "action": state.last_action,
+                            "strategy": state.last_strategy,
+                        }
+                    )
+                    if debug:
+                        print(f"{Colors.CYAN}[DB] Saved agent message{Colors.ENDC}")
+            except Exception as e:
+                if debug:
+                    print(f"{Colors.FAIL}[DB Error] Failed to save agent message: {e}{Colors.ENDC}")
             
             print(f"{Colors.GREEN}Agent:{Colors.ENDC} {state.last_bot_message}")
 

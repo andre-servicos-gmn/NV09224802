@@ -183,7 +183,16 @@ def save_message(
     domain: str | None = None,
     metadata: dict | None = None,
 ) -> dict:
-    """Save a message to the conversation."""
+    """Save a message to the conversation.
+    
+    Args:
+        conversation_id: UUID of the conversation
+        sender_type: 'user', 'agent', or 'system'
+        content: Message content
+        intent: Detected intent (optional)
+        domain: Domain (sales, support, store_qa)
+        metadata: Additional metadata dict (can include event type for system messages)
+    """
     client = get_client()
     data = {
         "conversation_id": conversation_id,
@@ -197,8 +206,13 @@ def save_message(
     if metadata:
         data["metadata"] = metadata
 
-    result = client.table("messages").insert(data).execute()
-    return result.data[0]
+    try:
+        result = client.table("messages").insert(data).execute()
+        return result.data[0] if result.data else {}
+    except Exception as e:
+        if os.getenv("DEBUG"):
+            print(f"[DB Error] Failed to save message: {e}")
+        return {}
 
 
 def get_conversation_history(
