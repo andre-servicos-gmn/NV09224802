@@ -10,6 +10,7 @@ from app.core.router import apply_entities_to_state, classify
 from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
 from app.core.supabase_client import get_supabase
+from app.core.database import get_or_create_conversation, save_message
 from app.graphs.main_graph import run_main_graph
 
 # Configure logging
@@ -33,7 +34,8 @@ class ChatResponse(BaseModel):
 async def chat_endpoint(request: ChatRequest):
     """
     Endpoint for chat interactions.
-    Persists state in Supabase conversations table.
+    Persists state in Supabase conversations.state (jsonb) column.
+    All updates are done by conversation UUID (id), never by session_id.
     """
     tenant_id = request.tenant_id
     session_id = request.session_id or uuid.uuid4().hex
@@ -43,20 +45,17 @@ async def chat_endpoint(request: ChatRequest):
     try:
         tenant = registry.get(tenant_id)
     except (KeyError, ValueError):
-        # Fallback for demo if not found in registry (should be there if seeded correctly)
-        # But for safety, try to load 'demo' alias if UUID fails
         try:
              tenant = registry.get("demo")
         except (KeyError, ValueError):
              raise HTTPException(status_code=404, detail=f"Tenant '{tenant_id}' not found")
 
-    # Get Supabase client early for status check and state management
     supabase = get_supabase()
+    tenant_uuid = tenant.uuid or tenant.tenant_id
 
     # 1.1 Check agent status (unless it's playground)
     if not request.is_playground:
         try:
-            tenant_uuid = tenant.uuid or tenant.tenant_id
             tenant_data = supabase.table("tenants").select("active").eq("id", tenant_uuid).execute()
             if tenant_data.data and tenant_data.data[0].get("active") is False:
                 return ChatResponse(
@@ -67,29 +66,31 @@ async def chat_endpoint(request: ChatRequest):
         except Exception as e:
             logger.warning(f"Failed to check tenant status: {e}")
 
-    # 2. Load or Initialize State
-    state = None
+    # 2. Get or create conversation (single source of truth)
+    conversation = get_or_create_conversation(
+        tenant_id=tenant_uuid,
+        session_id=session_id,
+        channel="web"
+    )
+    conversation_id = conversation.get("id")
     
-    # Try to fetch existing conversation state
-    try:
-        res = supabase.table("conversations").select("id, metadata").eq("session_id", session_id).single().execute()
-        if res.data:
-            metadata = res.data[0].get("metadata", {})
-            if metadata:
-                # Reconstruct state from metadata
-                # We need to ensure metadata matches model fields
-                try:
-                    state = ConversationState(**metadata)
-                    # Update transient fields just in case
-                    state.tenant_id = tenant.tenant_id
-                    state.session_id = session_id
-                    # Update personality if changed
-                    if request.personality_id:
-                        state.personality_id = request.personality_id
-                except Exception as e:
-                    logger.warning(f"Failed to reconstruction state from DB: {e}. Starting fresh.")
-    except Exception as e:
-        logger.warning(f"Error fetching conversation: {e}")
+    if not conversation_id:
+        logger.error("Failed to get or create conversation")
+        raise HTTPException(status_code=500, detail="Failed to initialize conversation")
+
+    # 3. Load or Initialize State from conversations.state
+    state = None
+    existing_state = conversation.get("state", {})
+    
+    if existing_state and isinstance(existing_state, dict) and existing_state:
+        try:
+            state = ConversationState(**existing_state)
+            state.tenant_id = tenant.tenant_id
+            state.session_id = session_id
+            if request.personality_id:
+                state.personality_id = request.personality_id
+        except Exception as e:
+            logger.warning(f"Failed to reconstruct state from DB: {e}. Starting fresh.")
 
     if not state:
         state = ConversationState(
@@ -97,24 +98,24 @@ async def chat_endpoint(request: ChatRequest):
             session_id=session_id,
             personality_id=request.personality_id or "professional"
         )
-        # Create conversation record if not exists
-        try:
-            supabase.table("conversations").insert({
-                "tenant_id": tenant.uuid or tenant.tenant_id,
-                "session_id": session_id,
-                "channel": "web",
-                "status": "active",
-                "metadata": state.model_dump(mode='json')
-            }).execute()
-        except Exception as e:
-            logger.error(f"Failed to create conversation record: {e}")
 
-    # 3. Process Message
+    # 4. Process Message
     message = request.message
     state.last_user_message = message
     state.add_to_history("user", message)
 
-    # 3.1 Classification
+    # 4.1 Save user message
+    try:
+        save_message(
+            conversation_id=conversation_id,
+            sender_type="user",
+            content=message,
+            domain=state.domain
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save user message: {e}")
+
+    # 4.2 Classification
     context = {
         "tenant_id": state.tenant_id,
         "session_id": state.session_id,
@@ -123,7 +124,6 @@ async def chat_endpoint(request: ChatRequest):
         "store_name": tenant.name,
     }
     
-    # Run classification
     decision = classify(message, context=context, use_llm=True)
     
     state.set_intent(decision.intent)
@@ -131,25 +131,48 @@ async def chat_endpoint(request: ChatRequest):
     apply_entities_to_state(state, decision.entities)
     state.sentiment_level = decision.sentiment_level
     state.needs_handoff = decision.needs_handoff
-    
-    if decision.needs_handoff:
-         # Update status in DB
-         try:
-             supabase.table("conversations").update({"status": "handoff"}).eq("session_id", session_id).execute()
-         except Exception as e:
-             logger.error(f"Failed to update handoff status: {e}")
 
-    # 4. Run Graph
+    # 5. Run Graph
     state = run_main_graph(state, tenant)
-    
-    # Add bot response to history
     state.add_to_history("agent", state.last_bot_message or "")
 
-    # 5. Persist State
+    # 5.1 Save agent message
+    try:
+        if state.last_bot_message:
+            save_message(
+                conversation_id=conversation_id,
+                sender_type="agent",
+                content=state.last_bot_message,
+                intent=state.intent,
+                domain=state.domain,
+                metadata={
+                    "action": state.last_action,
+                    "strategy": state.last_strategy,
+                }
+            )
+    except Exception as e:
+        logger.warning(f"Failed to save agent message: {e}")
+
+    # 5.2 Save handoff system event if needed
+    if state.needs_handoff:
+        try:
+            save_message(
+                conversation_id=conversation_id,
+                sender_type="system",
+                content=f"Handoff requested: {decision.handoff_reason or 'escalation'}",
+                metadata={"event": "handoff"}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save handoff message: {e}")
+
+    # 6. Persist State to conversations.state (by UUID, not session_id)
     try:
         supabase.table("conversations").update({
-            "metadata": state.model_dump(mode='json')
-        }).eq("session_id", session_id).execute()
+            "state": state.model_dump(mode='json'),
+            "domain": state.domain,
+            "frustration_level": state.frustration_level,
+            "status": "handoff" if state.needs_handoff else "active"
+        }).eq("id", conversation_id).execute()
     except Exception as e:
         logger.error(f"Failed to persist state: {e}")
 

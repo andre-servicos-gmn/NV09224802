@@ -117,19 +117,24 @@ def create_conversation(
     session_id: str,
     user_id: str | None = None,
     channel: str = "whatsapp",
+    domain: str = "store_qa",
 ) -> dict:
-    """Create a new conversation."""
+    """Create a new conversation with all required fields."""
     client = get_client()
     data = {
         "tenant_id": tenant_id,
         "session_id": session_id,
         "channel": channel,
+        "status": "active",
+        "domain": domain,
+        "frustration_level": 0,
+        "state": {},
     }
     if user_id:
         data["user_id"] = user_id
 
     result = client.table("conversations").insert(data).execute()
-    return result.data[0]
+    return result.data[0] if result.data else {}
 
 
 def get_conversation_by_session(tenant_id: str, session_id: str) -> dict | None:
@@ -150,12 +155,13 @@ def get_or_create_conversation(
     session_id: str,
     user_id: str | None = None,
     channel: str = "whatsapp",
+    domain: str = "store_qa",
 ) -> dict:
-    """Get existing conversation or create a new one."""
+    """Get existing conversation or create a new one with proper defaults."""
     conversation = get_conversation_by_session(tenant_id, session_id)
     if conversation:
         return conversation
-    return create_conversation(tenant_id, session_id, user_id, channel)
+    return create_conversation(tenant_id, session_id, user_id, channel, domain)
 
 
 def update_conversation_state(conversation_id: str, state: dict) -> dict:
@@ -183,7 +189,16 @@ def save_message(
     domain: str | None = None,
     metadata: dict | None = None,
 ) -> dict:
-    """Save a message to the conversation."""
+    """Save a message to the conversation.
+    
+    Args:
+        conversation_id: UUID of the conversation
+        sender_type: 'user', 'agent', or 'system'
+        content: Message content
+        intent: Detected intent (optional)
+        domain: Domain (sales, support, store_qa)
+        metadata: Additional metadata dict (can include event type for system messages)
+    """
     client = get_client()
     data = {
         "conversation_id": conversation_id,
@@ -197,8 +212,13 @@ def save_message(
     if metadata:
         data["metadata"] = metadata
 
-    result = client.table("messages").insert(data).execute()
-    return result.data[0]
+    try:
+        result = client.table("messages").insert(data).execute()
+        return result.data[0] if result.data else {}
+    except Exception as e:
+        if os.getenv("DEBUG"):
+            print(f"[DB Error] Failed to save message: {e}")
+        return {}
 
 
 def get_conversation_history(
