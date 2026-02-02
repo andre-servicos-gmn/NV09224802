@@ -68,6 +68,20 @@ class StorageClient:
         return StorageBucket(self.client, bucket_id)
 
 
+class NotTableQuery:
+    """Helper class for NOT filters."""
+    
+    def __init__(self, query: "TableQuery"):
+        self._query = query
+    
+    def in_(self, column: str, values: list[Any]) -> "TableQuery":
+        """Adiciona filtro NOT IN."""
+        # PostgREST syntax for NOT IN: col=not.in.(val1,val2,val3)
+        val_str = f"({','.join(str(v) for v in values)})"
+        self._query._filters.append((column, "not.in", val_str))
+        return self._query
+
+
 class TableQuery:
     """Query builder para tabelas Supabase."""
     
@@ -134,6 +148,16 @@ class TableQuery:
         self._filters.append((column, "in", val_str))
         return self
     
+    @property
+    def not_(self) -> "NotTableQuery":
+        """Returns a NOT filter builder."""
+        return NotTableQuery(self)
+    
+    def neq(self, column: str, value: Any) -> "TableQuery":
+        """Adiciona filtro not equal."""
+        self._filters.append((column, "neq", value))
+        return self
+    
     def order(self, column: str, ascending: bool = True) -> "TableQuery":
         """Define ordenação."""
         self._order_by = (column, ascending)
@@ -142,6 +166,12 @@ class TableQuery:
     def limit(self, count: int) -> "TableQuery":
         """Define limite de resultados."""
         self._limit_val = count
+        return self
+    
+    def single(self) -> "TableQuery":
+        """Expect a single result (limit 1)."""
+        self._single = True
+        self._limit_val = 1
         return self
     
     def is_(self, column: str, value: str) -> "TableQuery":
@@ -263,6 +293,10 @@ class TableQuery:
                     count = int(total)
             except ValueError:
                 pass
+        
+        # For single() mode, return first item as dict (or None if empty)
+        if self._single and isinstance(data, list):
+            data = data[0] if data else None
         
         # Pass raw data to QueryResponse, which now handles dict->list conversion
         return QueryResponse(data, count=count)
@@ -389,10 +423,14 @@ class QueryResponse:
     """Resposta de uma query Supabase."""
     
     def __init__(self, data: Any, count: Optional[int] = None) -> None:
-        if isinstance(data, list):
+        # Handle single() mode returning None when no results
+        if data is None:
+            self.data = None
+        elif isinstance(data, list):
             self.data = data
         elif isinstance(data, dict):
-            self.data = [data]
+            # Keep as dict for single() mode
+            self.data = data
         else:
             self.data = []
         self.count = count

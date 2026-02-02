@@ -31,6 +31,8 @@ from app.api.webhooks import router as webhooks_router
 from app.api.chat import router as chat_router
 from app.api.upload import router as upload_router
 from app.api.tenants import router as tenants_router
+from app.api.handoff import router as handoff_router
+from app.api.conversations import router as conversations_router
 
 
 # Configure logging
@@ -131,6 +133,8 @@ app.include_router(chat_router)
 app.include_router(upload_router)
 app.include_router(tenants_router)
 app.include_router(auth_router)
+app.include_router(handoff_router)
+app.include_router(conversations_router)
 
 @app.post("/test-post")
 async def test_post():

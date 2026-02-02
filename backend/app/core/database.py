@@ -118,6 +118,7 @@ def create_conversation(
     user_id: str | None = None,
     channel: str = "whatsapp",
     domain: str = "store_qa",
+    number: str | None = None,
 ) -> dict:
     """Create a new conversation with all required fields."""
     client = get_client()
@@ -132,6 +133,8 @@ def create_conversation(
     }
     if user_id:
         data["user_id"] = user_id
+    if number:
+        data["number"] = number
 
     result = client.table("conversations").insert(data).execute()
     return result.data[0] if result.data else {}
@@ -156,12 +159,18 @@ def get_or_create_conversation(
     user_id: str | None = None,
     channel: str = "whatsapp",
     domain: str = "store_qa",
+    number: str | None = None,
 ) -> dict:
     """Get existing conversation or create a new one with proper defaults."""
     conversation = get_conversation_by_session(tenant_id, session_id)
     if conversation:
+        # Update number if provided and not already set
+        if number and not conversation.get("number"):
+            client = get_client()
+            client.table("conversations").update({"number": number}).eq("id", conversation["id"]).execute()
+            conversation["number"] = number
         return conversation
-    return create_conversation(tenant_id, session_id, user_id, channel, domain)
+    return create_conversation(tenant_id, session_id, user_id, channel, domain, number)
 
 
 def update_conversation_state(conversation_id: str, state: dict) -> dict:

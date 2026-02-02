@@ -19,11 +19,12 @@ def persist_user_message(
     try:
         tenant_uuid = resolve_tenant_uuid(state.tenant_id)
 
-        # Get or create conversation
+        # Get or create conversation - session_id is the phone number for WhatsApp
         conversation = get_or_create_conversation(
             tenant_id=tenant_uuid,
             session_id=state.session_id,
             channel=state.channel,
+            number=state.session_id if state.channel == "whatsapp" else None,
         )
         conversation_id = conversation["id"]
 
