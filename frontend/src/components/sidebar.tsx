@@ -13,12 +13,14 @@ import {
     Bell,
     Menu,
     X,
+    MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTenant } from "@/contexts/tenant-context";
 
 const navigation = [
     { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { name: "Conversas", href: "/dashboard/conversations", icon: MessageSquare },
     { name: "Agentes", href: "/dashboard/agents", icon: Bot },
     { name: "Config", href: "/dashboard/settings", icon: Settings },
 ];

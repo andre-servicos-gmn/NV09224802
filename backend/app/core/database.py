@@ -118,6 +118,7 @@ def create_conversation(
     user_id: str | None = None,
     channel: str = "whatsapp",
     domain: str = "store_qa",
+    number: str | None = None,
 ) -> dict:
     """Create a new conversation with all required fields."""
     client = get_client()
@@ -132,6 +133,8 @@ def create_conversation(
     }
     if user_id:
         data["user_id"] = user_id
+    if number:
+        data["number"] = number
 
     result = client.table("conversations").insert(data).execute()
     return result.data[0] if result.data else {}
@@ -156,16 +159,49 @@ def get_or_create_conversation(
     user_id: str | None = None,
     channel: str = "whatsapp",
     domain: str = "store_qa",
+    number: str | None = None,
 ) -> dict:
     """Get existing conversation or create a new one with proper defaults."""
     conversation = get_conversation_by_session(tenant_id, session_id)
     if conversation:
+        # Update number if provided and not already set
+        if number and not conversation.get("number"):
+            client = get_client()
+            client.table("conversations").update({"number": number}).eq("id", conversation["id"]).execute()
+            conversation["number"] = number
+
+        # Auto-Reactivation Check
+        if conversation.get("status") == "closed":
+            client = get_client()
+            # Reactivate
+            client.table("conversations").update({
+                "status": "active",
+                # Optional: Reset frustration or other metrics? Keeping it simple for now as requested.
+            }).eq("id", conversation["id"]).execute()
+            
+            # Log system message for reactivation
+            save_message(
+                conversation_id=conversation["id"],
+                sender_type="system",
+                content="Conversa reativada por nova mensagem do cliente",
+                metadata={"event": "auto_reactivate"}
+            )
+            
+            conversation["status"] = "active"
+
         return conversation
-    return create_conversation(tenant_id, session_id, user_id, channel, domain)
+
+
+    return create_conversation(tenant_id, session_id, user_id, channel, domain, number)
 
 
 def update_conversation_state(conversation_id: str, state: dict) -> dict:
-    """Update conversation state."""
+    """
+    Update conversation state.
+    WARNING: This replaces the entire 'state' JSON column with the provided dict.
+    Ensure you are passing the full desired state, not a partial update,
+    unless you intend to wipe other fields.
+    """
     client = get_client()
     result = (
         client.table("conversations")
@@ -213,7 +249,18 @@ def save_message(
         data["metadata"] = metadata
 
     try:
+        # Save message
         result = client.table("messages").insert(data).execute()
+        
+        # Update conversation updated_at
+        # We use a raw string "now()" which Supabase/Postgres understands, or fetch current time.
+        # Ideally, use client-generated time or rely on DB default. 
+        # But 'update' requires a value. 
+        from datetime import datetime, timezone
+        now_ts = datetime.now(timezone.utc).isoformat()
+        
+        client.table("conversations").update({"updated_at": now_ts}).eq("id", conversation_id).execute()
+        
         return result.data[0] if result.data else {}
     except Exception as e:
         if os.getenv("DEBUG"):

@@ -173,7 +173,7 @@ Exemplo: "Entendi. Você pagou via Pix e ainda não apareceu o rastreio. Pra eu 
         state.repeat_count += 1
         
     else:
-        # Strategy: rag_answer (default)
+    # Strategy: rag_answer (default)
         user_prompt = f"""[Mensagem do Cliente]
 {user_message or '(sem mensagem)'}
 
@@ -187,8 +187,8 @@ Exemplo: "Entendi. Você pagou via Pix e ainda não apareceu o rastreio. Pra eu 
 [Instruções]
 - Use o resumo da conversa para dar contexto
 - Responda usando APENAS informações do Manual da Loja
-- Se não estiver no manual, diga: "Não tenho essa informação no momento. Posso verificar com a equipe."
-- Use os fatos conhecidos para personalizar (ex: "sobre seu pedido 1234...")
+- Se o cliente agradecer ou confirmar que entendeu e que não precisa de mais nada, adicione "[RESOLVED]" no final da sua resposta.
+- Exemplo: "Fico feliz em ajudar! Se precisar de algo mais, estou à disposição. [RESOLVED]"
 - NÃO invente prazos, políticas ou status
 - Copie exatamente números e prazos do manual (não converta dias↔horas)
 - Máximo 3 frases, sem markdown
@@ -206,6 +206,14 @@ Exemplo: "Entendi. Você pagou via Pix e ainda não apareceu o rastreio. Pra eu 
     ])
     
     response = (result.content or "").strip()
+    
+    # Check for resolution tag
+    if "[RESOLVED]" in response:
+        state.needs_resolution = True
+        response = response.replace("[RESOLVED]", "").strip()
+        if os.getenv("DEBUG"):
+            print("[store_qa_respond] Detected [RESOLVED] tag")
+
     state.last_bot_message = response
     state.last_action = "generate_response"
     state.last_action_success = bool(response)
