@@ -129,10 +129,36 @@ async def close_conversation(request: CloseRequest):
         logger.error(f"Failed to fetch conversation: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch conversation")
     
-    # 2. Update status to closed
+    # 2. Update status to closed and RESET state
     try:
+        # Fetch current state to preserve some long-term memory if needed
+        # But user requested "resetar state". We will keep critical context like 'facts'/history 
+        # but wipe transaction data (cart, intent, etc).
+        
+        # Reset state dict
+        reset_state = {
+            "intent": "general",
+            "cart_items": [],
+            "selected_products": [],
+            "selected_product_id": None,
+            "selected_variant_id": None,
+            "quantity": 1,
+            "order_id": None,
+            "ticket_opened": False,
+            "last_action": None,
+            "last_strategy": None,
+            "frustration_level": 0,
+            "needs_handoff": False,
+            "handoff_reason": None,
+            # Maintain long-term memory
+            "conversation_history": [],  # Or keep last few? Usually reset is better for fresh start
+            "conversation_summary": conv.data.get("state", {}).get("conversation_summary"),
+            "facts": conv.data.get("state", {}).get("facts", {})
+        }
+
         supabase.table("conversations").update({
-            "status": "closed"
+            "status": "closed",
+            "state": reset_state
         }).eq("id", conversation_id).execute()
     except Exception as e:
         logger.error(f"Failed to update conversation status: {e}")

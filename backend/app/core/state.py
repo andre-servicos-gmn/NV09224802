@@ -37,6 +37,8 @@ class ConversationState(BaseModel):
     conversation_history: list[dict] = Field(default_factory=list)
     original_complaint: str | None = None  # Stores the original issue for context
     
+    needs_resolution: bool = False  # If true, agent detected issue is resolved
+    
     # Short-term memory for Store Q&A (human touch)
     conversation_summary: str | None = None  # 2-6 lines summary
     facts: dict = Field(default_factory=dict)  # order_id, email, nome, cep, produto, problema, pagamento, data_compra, urgencia
@@ -45,6 +47,7 @@ class ConversationState(BaseModel):
 
     def bump_frustration(self) -> None:
         self.frustration_level += 1
+
 
     def set_intent(self, intent: str) -> None:
         self.intent = intent

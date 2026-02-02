@@ -7,6 +7,7 @@ from app.nodes.handoff import handoff
 from app.nodes.store_qa_decide import store_qa_decide
 from app.nodes.store_qa_respond import store_qa_respond
 from app.nodes.store_qa_update_memory import store_qa_update_memory
+from app.nodes.action_resolve import action_resolve
 
 
 def _build_graph(tenant):
@@ -15,8 +16,9 @@ def _build_graph(tenant):
     graph.add_node("store_qa_decide", lambda state: store_qa_decide(state, tenant))
     graph.add_node("handoff", lambda state: handoff(state, tenant))
     graph.add_node("store_qa_respond", lambda state: store_qa_respond(state, tenant))
+    graph.add_node("action_resolve", lambda state: action_resolve(state))
 
-    # Flow: Entry → update_memory → decide → [handoff | respond]
+    # Flow: Entry → update_memory → decide → [handoff | respond | resolve]
     graph.set_entry_point("update_memory")
     graph.add_edge("update_memory", "store_qa_decide")
 
@@ -25,11 +27,13 @@ def _build_graph(tenant):
         lambda state: state.next_step,
         {
             "handoff": "handoff",
+            "action_resolve": "action_resolve",
             "store_qa_respond": "store_qa_respond",
         },
     )
 
     graph.add_edge("handoff", END)
+    graph.add_edge("action_resolve", END)
     graph.add_edge("store_qa_respond", END)
 
     return graph.compile()
