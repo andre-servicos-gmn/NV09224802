@@ -169,27 +169,28 @@ def get_or_create_conversation(
             client = get_client()
             client.table("conversations").update({"number": number}).eq("id", conversation["id"]).execute()
             conversation["number"] = number
+
+        # Auto-Reactivation Check
+        if conversation.get("status") == "closed":
+            client = get_client()
+            # Reactivate
+            client.table("conversations").update({
+                "status": "active",
+                # Optional: Reset frustration or other metrics? Keeping it simple for now as requested.
+            }).eq("id", conversation["id"]).execute()
+            
+            # Log system message for reactivation
+            save_message(
+                conversation_id=conversation["id"],
+                sender_type="system",
+                content="Conversa reativada por nova mensagem do cliente",
+                metadata={"event": "auto_reactivate"}
+            )
+            
+            conversation["status"] = "active"
+
         return conversation
-    
-    # Auto-Reactivation Check
-    if conversation and conversation.get("status") == "closed":
-        client = get_client()
-        # Reactivate
-        client.table("conversations").update({
-            "status": "active",
-            # Optional: Reset frustration or other metrics? Keeping it simple for now as requested.
-        }).eq("id", conversation["id"]).execute()
-        
-        # Log system message for reactivation
-        save_message(
-            conversation_id=conversation["id"],
-            sender_type="system",
-            content="Conversa reativada por nova mensagem do cliente",
-            metadata={"event": "auto_reactivate"}
-        )
-        
-        conversation["status"] = "active"
-        return conversation
+
 
     return create_conversation(tenant_id, session_id, user_id, channel, domain, number)
 
@@ -204,11 +205,6 @@ def update_conversation_state(conversation_id: str, state: dict) -> dict:
     client = get_client()
     result = (
         client.table("conversations")
-        .update({"state": state})
-        .eq("id", conversation_id)
-        .execute()
-    )
-    return result.data[0] if result.data else {}
         .update({"state": state})
         .eq("id", conversation_id)
         .execute()
@@ -253,7 +249,18 @@ def save_message(
         data["metadata"] = metadata
 
     try:
+        # Save message
         result = client.table("messages").insert(data).execute()
+        
+        # Update conversation updated_at
+        # We use a raw string "now()" which Supabase/Postgres understands, or fetch current time.
+        # Ideally, use client-generated time or rely on DB default. 
+        # But 'update' requires a value. 
+        from datetime import datetime, timezone
+        now_ts = datetime.now(timezone.utc).isoformat()
+        
+        client.table("conversations").update({"updated_at": now_ts}).eq("id", conversation_id).execute()
+        
         return result.data[0] if result.data else {}
     except Exception as e:
         if os.getenv("DEBUG"):

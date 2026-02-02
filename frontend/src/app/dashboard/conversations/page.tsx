@@ -385,7 +385,7 @@ export default function ConversationsPage() {
                                     </div>
                                     <div className="text-xs text-zinc-500 flex items-center gap-1">
                                         <Clock className="h-3 w-3" />
-                                        {formatDate(conv.created_at)}
+                                        {formatDate(conv.updated_at || conv.created_at)}
                                     </div>
                                 </div>
                             </button>
@@ -423,8 +423,8 @@ export default function ConversationsPage() {
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
-                                {/* In Handoff tab: show Finalizar button */}
-                                {(selectedConversation.status === "handoff" || selectedConversation.status === "human_active") && (
+                                {/* In Handoff/Active tab: show Finalizar button */}
+                                {(selectedConversation.status === "handoff" || selectedConversation.status === "human_active" || selectedConversation.status === "active") && (
                                     <button
                                         onClick={() => setShowCloseDialog(true)}
                                         className="px-4 py-2 text-sm font-medium text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded-lg transition-all flex items-center gap-2"
