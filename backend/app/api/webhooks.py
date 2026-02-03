@@ -306,7 +306,7 @@ async def process_consolidated_message(
             save_session(tenant.tenant_id, session_id, result_state)
             
     except Exception as e:
-        logger.error(f"Error processing WhatsApp message: {e}")
+        logger.error(f"Error processing WhatsApp message: {e}", exc_info=True)
 
 
 # --- Endpoints ---
@@ -439,6 +439,7 @@ async def shopify_webhook(
         }
 
 
+@router.post("/whatsapp/{tenant_id}/messages-upsert", status_code=status.HTTP_200_OK, include_in_schema=False)
 @router.post(
     "/whatsapp/{tenant_id}",
     status_code=status.HTTP_200_OK,
@@ -455,7 +456,8 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
         registry = TenantRegistry()
         tenant = await registry.get_async(tenant_id, use_cache=True)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+        logger.error(f"❌ Tenant not found in registry: {tenant_id}")
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
     
     # Get WhatsApp adapter
     adapter = _get_whatsapp_adapter(tenant)
