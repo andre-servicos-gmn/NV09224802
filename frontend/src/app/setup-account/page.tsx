@@ -115,29 +115,44 @@ export default function SetupAccountPage() {
                 return;
             }
 
-            // 3. Update name in public.users table via backend
-            const response = await fetch("http://127.0.0.1:8000/update-user", {
+            // 3. Ensure user exists in public.users table and update name
+            // This will create the user if not exists, fetching tenant_id from auth metadata
+            // Try to get tenant_id from user metadata or localStorage as fallback
+            const metaTenantId = user.user_metadata?.tenant_id;
+            const storedTenantId = localStorage.getItem("nouva_tenant_id");
+            const tenantIdToSend = metaTenantId || storedTenantId || undefined;
+
+            console.log("Ensure user - tenant sources:", {
+                metaTenantId,
+                storedTenantId,
+                sending: tenantIdToSend
+            });
+
+            const response = await fetch("http://127.0.0.1:8000/ensure-user", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     user_id: user.id,
-                    name: name.trim()
+                    email: user.email || "",
+                    name: name.trim(),
+                    tenant_id: tenantIdToSend
                 })
             });
 
-            if (!response.ok) {
-                console.warn("Name update failed, but password was set");
+            const ensureResult = await response.json();
+
+            if (!response.ok || !ensureResult.success) {
+                console.error("Ensure user failed:", ensureResult);
+                setError("Erro ao criar perfil: " + (ensureResult.message || "Erro desconhecido"));
+                setState("FORM");
+                return;
             }
 
-            // 4. Get tenant_id for this user
-            const { data: userData } = await supabase
-                .from("users")
-                .select("tenant_id")
-                .eq("id", user.id)
-                .single();
+            // 4. Get tenant_id from the ensure-user response
+            const tenantId = ensureResult.data?.tenant_id;
 
-            if (userData?.tenant_id) {
-                localStorage.setItem("nouva_tenant_id", userData.tenant_id);
+            if (tenantId) {
+                localStorage.setItem("nouva_tenant_id", tenantId);
             }
 
             setState("SUCCESS");

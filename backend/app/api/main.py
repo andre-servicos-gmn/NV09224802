@@ -25,7 +25,10 @@ from fastapi.responses import JSONResponse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from dotenv import load_dotenv
-load_dotenv()
+# Load .env from project root (parent of backend folder)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+dotenv_path = os.path.join(project_root, ".env")
+load_dotenv(dotenv_path)
 
 from app.api.webhooks import router as webhooks_router
 from app.api.chat import router as chat_router
