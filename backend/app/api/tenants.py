@@ -43,6 +43,14 @@ class DeleteUserRequest(BaseModel):
     tenant_id: str  # For verification
 
 
+class EnsureUserRequest(BaseModel):
+    """Request to ensure user exists in public.users table."""
+    user_id: str
+    email: str
+    name: Optional[str] = None
+    tenant_id: Optional[str] = None  # If not provided, fetched from auth.users metadata
+
+
 @router.post("/update-tenant", response_model=TenantResponse)
 async def update_tenant(request: UpdateTenantRequest):
     """
@@ -264,6 +272,110 @@ async def update_user(request: UpdateUserRequest):
         raise HTTPException(status_code=500, detail=f"Failed to update user: {str(e)}")
 
 
+@router.post("/ensure-user", response_model=TenantResponse)
+async def ensure_user(request: EnsureUserRequest):
+    """
+    Ensure user exists in public.users table.
+    Creates if not exists, updates name if provided.
+    Fetches tenant_id from auth.users metadata if not provided.
+    """
+    supabase = get_supabase()
+    
+    # First check if user already exists
+    try:
+        existing = supabase.table("users").select("id, tenant_id, name").eq("id", request.user_id).execute()
+        
+        if existing.data:
+            # User exists, update name if provided
+            user_data = existing.data[0]
+            if request.name and request.name != user_data.get("name"):
+                supabase.table("users").update({"name": request.name}).eq("id", request.user_id).execute()
+            
+            return TenantResponse(
+                success=True,
+                message="User already exists",
+                data={
+                    "id": request.user_id,
+                    "tenant_id": user_data.get("tenant_id"),
+                    "name": request.name or user_data.get("name")
+                }
+            )
+    except Exception as e:
+        logger.warning(f"Error checking existing user: {e}")
+    
+    # User doesn't exist, need to create
+    # Get tenant_id from request or from auth.users metadata
+    tenant_id = request.tenant_id
+    logger.info(f"ensure-user: Initial tenant_id from request: {tenant_id}")
+    
+    if not tenant_id:
+        # Fetch from auth.users using Admin API
+        supabase_url = os.getenv("SUPABASE_URL")
+        service_key = os.getenv("SUPABASE_SERVICE_KEY")
+        
+        logger.info(f"ensure-user: Fetching from Admin API. URL exists: {bool(supabase_url)}, Key exists: {bool(service_key)}")
+        
+        if supabase_url and service_key:
+            try:
+                async with httpx.AsyncClient() as client:
+                    auth_url = f"{supabase_url}/auth/v1/admin/users/{request.user_id}"
+                    headers = {
+                        "apikey": service_key,
+                        "Authorization": f"Bearer {service_key}"
+                    }
+                    logger.info(f"ensure-user: Calling {auth_url}")
+                    response = await client.get(auth_url, headers=headers, timeout=10)
+                    
+                    logger.info(f"ensure-user: Admin API response status: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        auth_user = response.json()
+                        logger.info(f"ensure-user: auth_user keys: {auth_user.keys()}")
+                        raw_meta = auth_user.get("raw_user_meta_data", {})
+                        logger.info(f"ensure-user: raw_user_meta_data: {raw_meta}")
+                        # tenant_id is in raw_user_meta_data
+                        tenant_id = raw_meta.get("tenant_id")
+                        logger.info(f"Got tenant_id from auth.users metadata: {tenant_id}")
+                    else:
+                        logger.error(f"ensure-user: Admin API error: {response.status_code} - {response.text}")
+            except Exception as e:
+                logger.error(f"Failed to fetch auth user metadata: {e}")
+    
+    if not tenant_id:
+        return TenantResponse(
+            success=False,
+            message="Could not determine tenant_id for user. Please contact support."
+        )
+    
+    # Create user in public.users
+    try:
+        user_name = request.name or request.email.split("@")[0]
+        result = supabase.table("users").insert({
+            "id": request.user_id,
+            "email": request.email,
+            "name": user_name,
+            "tenant_id": tenant_id
+        }).execute()
+        
+        if result.data:
+            logger.info(f"Created user in public.users: {request.user_id}")
+            return TenantResponse(
+                success=True,
+                message="User created successfully",
+                data={
+                    "id": request.user_id,
+                    "tenant_id": tenant_id,
+                    "name": user_name
+                }
+            )
+        else:
+            return TenantResponse(success=False, message="Failed to create user")
+            
+    except Exception as e:
+        logger.error(f"Failed to create user: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
+
+
 @router.post("/invite-team-member", response_model=TenantResponse)
 async def invite_team_member(request: InviteTeamMemberRequest):
     """
@@ -318,23 +430,11 @@ async def invite_team_member(request: InviteTeamMemberRequest):
             new_user_id = invite_response.get("id")
             
             logger.info(f"User invited successfully: {request.email}, id: {new_user_id}")
+            logger.info(f"Invite response: {invite_response}")
         
-        # Insert into public.users table if we got a user ID
-        if new_user_id:
-            user_name = request.email.split("@")[0]
-            
-            try:
-                result = supabase.table("users").insert({
-                    "id": new_user_id,
-                    "tenant_id": str(tenant_uuid),
-                    "email": request.email,
-                    "name": user_name
-                }).execute()
-                
-                if not result.data:
-                    logger.warning(f"User invited but failed to insert into public.users")
-            except Exception as insert_error:
-                logger.warning(f"Failed to insert user into public.users: {insert_error}")
+        # NOTE: The user will be created in public.users when they complete
+        # the signup flow (via auth callback or login page).
+        # The tenant_id is stored in raw_user_meta_data and should be used there.
         
         return TenantResponse(
             success=True,
