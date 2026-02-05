@@ -285,6 +285,10 @@ temp/
 # Nouvaris specific
 nouvaris_agents_v2.egg-info/
 
+# Ngrok (local dev tunnel - do not commit binary)
+ngrok.exe
+**/ngrok.exe
+
 # ==============================================================================
 # NODE.JS / FRONTEND
 # ==============================================================================

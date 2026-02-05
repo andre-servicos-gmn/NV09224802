@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "@/lib/supabase/client";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useTenant } from "@/contexts/tenant-context";
 import { useToast } from "@/components/ui/toast";
 import { Dialog } from "@/components/ui/dialog";
@@ -18,7 +20,8 @@ import {
     Pause,
     Play,
     ChevronLeft,
-    ChevronRight
+    ChevronRight,
+    Check
 } from "lucide-react";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -74,6 +77,8 @@ export default function ConversationsPage() {
     const [error, setError] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesChannelRef = useRef<RealtimeChannel | null>(null);
+    const conversationsChannelRef = useRef<RealtimeChannel | null>(null);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -135,7 +140,11 @@ export default function ConversationsPage() {
             const data = await res.json();
 
             if (data.success && data.message) {
-                setMessages(prev => [...prev, data.message]);
+                const newMessage = data.message;
+                setMessages(prev => {
+                    if (prev.some(m => m.id === newMessage.id)) return prev;
+                    return [...prev, newMessage];
+                });
                 setMessageInput("");
                 setTimeout(scrollToBottom, 100);
             } else {
@@ -148,28 +157,39 @@ export default function ConversationsPage() {
         }
     };
 
-    // Close conversation
-    const handleCloseConversation = async () => {
+    // Resume Agent (Return to active)
+    const handleResumeAgent = async () => {
         if (!selectedConversation) return;
-
-        setClosingConversation(true);
-
+        setClosingConversation(true); // Reusing loading state
         try {
-            const res = await fetch(`${BACKEND_URL}/conversations/${selectedConversation.id}/close`, {
-                method: "POST"
-            });
-
-            if (!res.ok) throw new Error("Failed to close");
-
-            showToast("success", "Handoff finalizado");
+            const res = await fetch(`${BACKEND_URL}/conversations/${selectedConversation.id}/resume`, { method: "POST" });
+            if (!res.ok) throw new Error("Failed to resume");
+            showToast("success", "Agente retomado");
             setShowCloseDialog(false);
             setSelectedConversation(prev => prev ? { ...prev, status: "active" } : null);
-
-            // Refresh messages to get system message from DB
             fetchMessages(selectedConversation.id);
             fetchConversations();
         } catch (err) {
-            showToast("error", "Erro ao finalizar handoff");
+            showToast("error", "Erro ao retomar agente");
+        } finally {
+            setClosingConversation(false);
+        }
+    };
+
+    // Finish Conversation (Mark as closed)
+    const handleFinishConversation = async () => {
+        if (!selectedConversation) return;
+        setClosingConversation(true);
+        try {
+            const res = await fetch(`${BACKEND_URL}/conversations/${selectedConversation.id}/close`, { method: "POST" });
+            if (!res.ok) throw new Error("Failed to close");
+            showToast("success", "Conversa encerrada");
+            setShowCloseDialog(false);
+            setSelectedConversation(prev => prev ? { ...prev, status: "closed" } : null);
+            fetchMessages(selectedConversation.id);
+            fetchConversations();
+        } catch (err) {
+            showToast("error", "Erro ao finalizar");
         } finally {
             setClosingConversation(false);
         }
@@ -220,6 +240,71 @@ export default function ConversationsPage() {
         }
     }, [selectedConversation?.id]);
 
+    // Realtime subscription for messages (when conversation is selected)
+    useEffect(() => {
+        if (!selectedConversation) return;
+
+        // Clean up previous subscription
+        if (messagesChannelRef.current) {
+            messagesChannelRef.current.unsubscribe();
+        }
+
+        messagesChannelRef.current = supabase
+            .channel(`messages:${selectedConversation.id}`)
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'messages',
+                filter: `conversation_id=eq.${selectedConversation.id}`
+            }, (payload) => {
+                const newMsg = payload.new as Message;
+                console.log("[Realtime] New message received:", newMsg.id);
+                setMessages(prev => {
+                    // Avoid duplicates
+                    if (prev.some(m => m.id === newMsg.id)) return prev;
+                    return [...prev, newMsg];
+                });
+                setTimeout(scrollToBottom, 100);
+            })
+            .subscribe((status) => {
+                console.log("[Realtime] Messages channel status:", status);
+            });
+
+        return () => {
+            messagesChannelRef.current?.unsubscribe();
+        };
+    }, [selectedConversation?.id]);
+
+    // Realtime subscription for conversations list updates
+    useEffect(() => {
+        if (!tenantId) return;
+
+        // Clean up previous subscription
+        if (conversationsChannelRef.current) {
+            conversationsChannelRef.current.unsubscribe();
+        }
+
+        conversationsChannelRef.current = supabase
+            .channel(`conversations:${tenantId}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'conversations',
+                filter: `tenant_id=eq.${tenantId}`
+            }, (payload) => {
+                console.log("[Realtime] Conversations updated:", payload.eventType);
+                // Refresh the conversations list
+                fetchConversations(page);
+            })
+            .subscribe((status) => {
+                console.log("[Realtime] Conversations channel status:", status);
+            });
+
+        return () => {
+            conversationsChannelRef.current?.unsubscribe();
+        };
+    }, [tenantId, tab, page]);
+
     // Filter conversations by search
     const filteredConversations = conversations.filter(conv => {
         const displayName = (conv.push_name || conv.session_id).toLowerCase();
@@ -237,6 +322,20 @@ export default function ConversationsPage() {
     const formatDate = (dateStr: string) => {
         const date = new Date(dateStr);
         return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+    };
+
+    const formatConversationDate = (dateStr: string) => {
+        if (!dateStr) return "";
+        const date = new Date(dateStr);
+        const now = new Date();
+        const diffMs = now.getTime() - date.getTime();
+        const diffHours = diffMs / (1000 * 60 * 60);
+
+        if (diffHours < 24) {
+            return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+        } else {
+            return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+        }
     };
 
     const getStatusColor = (status: string) => {
@@ -385,7 +484,7 @@ export default function ConversationsPage() {
                                     </div>
                                     <div className="text-xs text-zinc-500 flex items-center gap-1">
                                         <Clock className="h-3 w-3" />
-                                        {formatDate(conv.updated_at || conv.created_at)}
+                                        {formatConversationDate(conv.updated_at || conv.created_at)}
                                     </div>
                                 </div>
                             </button>
@@ -424,14 +523,27 @@ export default function ConversationsPage() {
                             </div>
                             <div className="flex items-center gap-2">
                                 {/* In Handoff/Active tab: show Finalizar button */}
-                                {(selectedConversation.status === "handoff" || selectedConversation.status === "human_active" || selectedConversation.status === "active") && (
-                                    <button
-                                        onClick={() => setShowCloseDialog(true)}
-                                        className="px-4 py-2 text-sm font-medium text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded-lg transition-all flex items-center gap-2"
-                                    >
-                                        <Play className="h-4 w-4" />
-                                        Finalizar
-                                    </button>
+                                {/* In Handoff/Active tab: show Resume & Finish buttons */}
+                                {(selectedConversation.status === "handoff" || selectedConversation.status === "human_active") && (
+                                    <>
+                                        <button
+                                            onClick={handleResumeAgent}
+                                            disabled={closingConversation}
+                                            className="px-4 py-2 text-sm font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-all flex items-center gap-2"
+                                            title="Tornar ativo (Robô volta a responder)"
+                                        >
+                                            <Play className="h-4 w-4" />
+                                            Reativar Conversa
+                                        </button>
+                                        <button
+                                            onClick={() => setShowCloseDialog(true)}
+                                            className="px-4 py-2 text-sm font-medium text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded-lg transition-all flex items-center gap-2"
+                                            title="Finalizar e arquivar conversa"
+                                        >
+                                            <Check className="h-4 w-4" />
+                                            Finalizar
+                                        </button>
+                                    </>
                                 )}
                                 {/* In General tab (active status): show Pausar button */}
                                 {selectedConversation.status === "active" && (
@@ -465,53 +577,55 @@ export default function ConversationsPage() {
                                     <span className="text-sm">Ainda não há mensagens nesta conversa</span>
                                 </div>
                             ) : (
-                                messages.map((msg) => {
-                                    const isHuman = msg.sender_type === "agent" && (msg.metadata as any)?.sent_by === "human_agent";
-                                    return (
-                                        <div
-                                            key={msg.id}
-                                            className={`flex gap-3 ${msg.sender_type === "agent" ? "flex-row-reverse" : ""
-                                                }`}
-                                        >
-                                            <div className={`h-8 w-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.sender_type === "user"
-                                                ? "bg-zinc-700"
-                                                : isHuman
-                                                    ? "bg-emerald-500/20"
-                                                    : msg.sender_type === "agent"
-                                                        ? "bg-indigo-500/20"
-                                                        : "bg-yellow-500/20"
-                                                }`}>
-                                                {msg.sender_type === "user" ? (
-                                                    <User className="h-4 w-4 text-zinc-300" />
-                                                ) : isHuman ? (
-                                                    <User className="h-4 w-4 text-emerald-400" />
-                                                ) : msg.sender_type === "agent" ? (
-                                                    <Bot className="h-4 w-4 text-indigo-400" />
-                                                ) : (
-                                                    <AlertCircle className="h-4 w-4 text-yellow-400" />
-                                                )}
-                                            </div>
-                                            <div className={`max-w-[70%] ${msg.sender_type === "agent" ? "text-right" : ""
-                                                }`}>
-                                                <div className={`px-4 py-2 rounded-2xl text-sm ${msg.sender_type === "user"
-                                                    ? "bg-white/[0.06] text-white rounded-tl-sm"
+                                [...messages]
+                                    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+                                    .map((msg) => {
+                                        const isHuman = msg.sender_type === "agent" && (msg.metadata as any)?.sent_by === "human_agent";
+                                        return (
+                                            <div
+                                                key={msg.id}
+                                                className={`flex gap-3 ${msg.sender_type === "agent" ? "flex-row-reverse" : ""
+                                                    }`}
+                                            >
+                                                <div className={`h-8 w-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.sender_type === "user"
+                                                    ? "bg-zinc-700"
                                                     : isHuman
-                                                        ? "bg-emerald-500/20 text-white rounded-tr-sm"
+                                                        ? "bg-emerald-500/20"
                                                         : msg.sender_type === "agent"
-                                                            ? "bg-indigo-500/20 text-white rounded-tr-sm"
-                                                            : "bg-yellow-500/10 text-yellow-200 rounded-tl-sm italic"
+                                                            ? "bg-indigo-500/20"
+                                                            : "bg-yellow-500/20"
                                                     }`}>
-                                                    {msg.content}
+                                                    {msg.sender_type === "user" ? (
+                                                        <User className="h-4 w-4 text-zinc-300" />
+                                                    ) : isHuman ? (
+                                                        <User className="h-4 w-4 text-emerald-400" />
+                                                    ) : msg.sender_type === "agent" ? (
+                                                        <Bot className="h-4 w-4 text-indigo-400" />
+                                                    ) : (
+                                                        <AlertCircle className="h-4 w-4 text-yellow-400" />
+                                                    )}
                                                 </div>
-                                                <div className={`text-xs text-zinc-500 mt-1 ${msg.sender_type === "agent" ? "text-right" : ""
+                                                <div className={`max-w-[70%] ${msg.sender_type === "agent" ? "text-right" : ""
                                                     }`}>
-                                                    {formatTime(msg.created_at)}
-                                                    {isHuman && <span className="ml-1 text-emerald-500/50">• Atendente</span>}
+                                                    <div className={`px-4 py-2 rounded-2xl text-sm ${msg.sender_type === "user"
+                                                        ? "bg-white/[0.06] text-white rounded-tl-sm"
+                                                        : isHuman
+                                                            ? "bg-emerald-500/20 text-white rounded-tr-sm"
+                                                            : msg.sender_type === "agent"
+                                                                ? "bg-indigo-500/20 text-white rounded-tr-sm"
+                                                                : "bg-yellow-500/10 text-yellow-200 rounded-tl-sm italic"
+                                                        }`}>
+                                                        {msg.content}
+                                                    </div>
+                                                    <div className={`text-xs text-zinc-500 mt-1 ${msg.sender_type === "agent" ? "text-right" : ""
+                                                        }`}>
+                                                        {formatTime(msg.created_at)}
+                                                        {isHuman && <span className="ml-1 text-emerald-500/50">• Atendente</span>}
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    );
-                                })
+                                        );
+                                    })
                             )}
                             <div ref={messagesEndRef} />
                         </div>
@@ -552,9 +666,9 @@ export default function ConversationsPage() {
             </div>
 
             {/* Close Confirmation Dialog */}
-            <Dialog open={showCloseDialog} onClose={() => setShowCloseDialog(false)} title="Finalizar Handoff">
+            <Dialog open={showCloseDialog} onClose={() => setShowCloseDialog(false)} title="Encerrar Atendimento">
                 <p className="text-zinc-400 mb-6">
-                    Ao finalizar, o agente voltará a responder automaticamente esta conversa.
+                    A conversa será marcada como encerrada e arquivada. Se o cliente enviar nova mensagem, o agente voltará a responder automaticamente.
                 </p>
                 <div className="flex gap-3 justify-end">
                     <button
@@ -564,7 +678,7 @@ export default function ConversationsPage() {
                         Cancelar
                     </button>
                     <button
-                        onClick={handleCloseConversation}
+                        onClick={handleFinishConversation}
                         disabled={closingConversation}
                         className="px-4 py-2 text-sm font-medium bg-green-500 hover:bg-green-600 text-white rounded-lg transition-all disabled:opacity-50 flex items-center gap-2"
                     >
@@ -573,6 +687,6 @@ export default function ConversationsPage() {
                     </button>
                 </div>
             </Dialog>
-        </div>
+        </div >
     );
 }

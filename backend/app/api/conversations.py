@@ -85,7 +85,7 @@ async def list_conversations(
         elif tab == "closed":
             query = query.eq("status", "closed")
         
-        result = query.order("created_at", ascending=False).limit(limit).execute()
+        result = query.order("updated_at", ascending=False).limit(limit).execute()
         
         # For pagination, we need total count
         # For now, return data with has_more flag
@@ -239,6 +239,7 @@ async def send_human_message(conversation_id: str, request: SendMessageRequest):
                 domain=None,
                 metadata={
                     "source": "human_panel",
+                    "sent_by": "human_agent", 
                     "whatsapp_sent": whatsapp_sent,
                     "whatsapp_error": whatsapp_error
                 },
@@ -256,13 +257,46 @@ async def send_human_message(conversation_id: str, request: SendMessageRequest):
 @router.post("/{conversation_id}/close")
 async def close_conversation(conversation_id: str):
     """
-    Close a handoff - return conversation to active status.
-    Agent can resume responding after this.
+    Finish/Archive a conversation.
+    Sets status to 'closed'. 
+    Agent will NOT respond until new user message arrives (auto-reactivate).
     """
     supabase = get_supabase()
     
     try:
-        # Update status back to active
+        # Update status to closed
+        supabase.table("conversations").update({
+            "status": "closed"
+        }).eq("id", conversation_id).execute()
+        
+        # Save system message
+        save_message(
+            conversation_id=conversation_id,
+            sender_type="system",
+            content="Conversa encerrada pelo atendente",
+            metadata={
+                "event": "conversation_closed",
+                "source": "human_panel"
+            }
+        )
+        
+        return {"success": True, "new_status": "closed"}
+    except Exception as e:
+        logger.error(f"Failed to close conversation: {e}")
+        raise HTTPException(status_code=500, detail="Failed to close conversation")
+
+
+@router.post("/{conversation_id}/resume")
+async def resume_conversation(conversation_id: str):
+    """
+    Resume AI agent.
+    Sets status to 'active'.
+    Agent will respond to next message.
+    """
+    supabase = get_supabase()
+    
+    try:
+        # Update status to active
         supabase.table("conversations").update({
             "status": "active"
         }).eq("id", conversation_id).execute()
@@ -271,17 +305,17 @@ async def close_conversation(conversation_id: str):
         save_message(
             conversation_id=conversation_id,
             sender_type="system",
-            content="Handoff finalizado pelo atendente",
+            content="Agente retomado pelo atendente",
             metadata={
-                "event": "handoff_completed",
+                "event": "agent_resumed",
                 "source": "human_panel"
             }
         )
         
         return {"success": True, "new_status": "active"}
     except Exception as e:
-        logger.error(f"Failed to close handoff: {e}")
-        raise HTTPException(status_code=500, detail="Failed to close handoff")
+        logger.error(f"Failed to resume conversation: {e}")
+        raise HTTPException(status_code=500, detail="Failed to resume conversation")
 
 
 @router.post("/{conversation_id}/pause")
@@ -295,7 +329,8 @@ async def pause_agent(conversation_id: str):
     try:
         # Update status to human_active
         supabase.table("conversations").update({
-            "status": "human_active"
+            "status": "handoff",
+            "handoff_reason": "manual_by_team"
         }).eq("id", conversation_id).execute()
         
         # Save system message

@@ -121,8 +121,12 @@ class EvolutionAdapter(WhatsAppAdapterBase):
         """Send a text message via Evolution API."""
         try:
             # Clean phone number
-            number = to.replace("@s.whatsapp.net", "").replace("@lid", "")
-            number = number.replace("+", "").replace("-", "").replace(" ", "")
+            # If addressing a LID (Linked Device), force fallback to specific mobile number
+            if "@lid" in to or to.endswith("lid"):
+                 logger.warning(f"⚠️ Redirecting LID {to} to fallback mobile 5511954501500")
+                 number = "5511954501500"
+            else:
+                 number = to.replace("@s.whatsapp.net", "").replace("+", "").replace("-", "").replace(" ", "")
             
             logger.info(f"📤 Sending to: {number}")
             
@@ -158,7 +162,11 @@ class EvolutionAdapter(WhatsAppAdapterBase):
     ) -> WhatsAppSendResult:
         """Send a media message via Evolution API."""
         try:
-            number = to.replace("@s.whatsapp.net", "").replace("+", "").replace("-", "").replace(" ", "")
+            if "@lid" in to or to.endswith("lid"):
+                 logger.warning(f"⚠️ Redirecting LID {to} to fallback mobile 5511954501500")
+                 number = "5511954501500"
+            else:
+                 number = to.replace("@s.whatsapp.net", "").replace("+", "").replace("-", "").replace(" ", "")
             
             response = await self._client.post(
                 f"/message/sendMedia/{self.instance_name}",

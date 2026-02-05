@@ -27,7 +27,7 @@ Analise a mensagem do usuário e retorne APENAS um JSON válido com:
   "sentiment_level": "calm" | "frustrated" | "aggressive" | "threat",
   "sentiment_score": 0.0 a 1.0,
   "needs_handoff": true | false,
-  "handoff_reason": null | "threat_detected" | "fraud_accusation" | "handoff_requested" | "high_frustration"
+  "handoff_reason": null | "human_requested" | "high_frustration" | "refund_request"
 }
 
 CRITÉRIOS:
@@ -39,10 +39,11 @@ CRITÉRIOS:
    - "threat": Ameaças legais (processar, advogado, polícia, Procon)
 
 2. needs_handoff = true quando:
-   - Ameaça legal (processar, advogado, Procon, justiça)
-   - Acusação de fraude/golpe/roubo
-   - Pedido explícito de humano ("quero falar com atendente", "não quero bot")
-   - Frustração extrema (muitos !!!, CAPS LOCK, xingamentos)
+   - Ameaça legal (processar, advogado, Procon, justiça) -> "high_frustration"
+   - Acusação de fraude/golpe/roubo -> "high_frustration"
+   - Pedido explícito de humano ("quero falar com atendente", "não quero bot") -> "human_requested"
+   - Frustração extrema (muitos !!!, CAPS LOCK, xingamentos) -> "high_frustration"
+   - Solicitação clara de reembolso/cancelamento -> "refund_request"
 
 3. sentiment_score:
    - 0.0-0.3: Calmo
