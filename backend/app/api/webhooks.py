@@ -424,7 +424,7 @@ async def process_consolidated_message(
             save_session(tenant.tenant_id, session_id, result_state)
             
     except Exception as e:
-        logger.error(f"Error processing WhatsApp message: {e}")
+        logger.error(f"Error processing WhatsApp message: {e}", exc_info=True)
 
 
 # --- Endpoints ---

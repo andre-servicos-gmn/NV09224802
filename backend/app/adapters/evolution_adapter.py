@@ -48,7 +48,9 @@ class EvolutionAdapter(WhatsAppAdapterBase):
         message_content = data.get("message", {})
         
         # Skip messages sent by us
+        logger.info(f"🔍 Checking message source. Key: {key}")
         if key.get("fromMe") in (True, "true"):
+            logger.info("⚠️ Skipping message identified as fromMe=True")
             return None
         
         remote_jid = key.get("remoteJid", "")
