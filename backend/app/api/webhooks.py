@@ -627,10 +627,7 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     raw_id = adapter.get_session_id() or message.from_number
     session_id = "".join(filter(str.isdigit, str(raw_id)))
     
-    # @lid fallback - TEMP: remove before production
-    if not session_id or "@lid" in str(raw_id) or str(raw_id).endswith("lid"):
-        session_id = "5511954501500"
-        logger.warning(f"[WH] Using fallback session_id due to @lid: {raw_id}")
+
     
     logger.info(f"[WH] received tenant={tenant_id[:8]}... from={session_id}")
     
