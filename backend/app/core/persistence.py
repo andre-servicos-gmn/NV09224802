@@ -82,9 +82,9 @@ def persist_conversation_state(
         state_dict = {
             "domain": state.domain,
             "intent": state.intent,
-            "selected_product_id": state.selected_product_id,
-            "selected_variant_id": state.selected_variant_id,
-            "quantity": state.quantity,
+            "selected_product_id": state.soft_context.get("focused_product_id"),
+            "selected_variant_id": state.soft_context.get("selected_variant_id"),
+            "quantity": state.soft_context.get("quantity"),
             "order_id": state.order_id,
             "customer_email": state.customer_email,
             "frustration_level": state.frustration_level,
