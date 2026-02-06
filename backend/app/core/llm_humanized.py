@@ -278,6 +278,108 @@ def get_knowledge_context(
 # =============================================================================
 
 
+# =============================================================================
+# RESPONSE SYNTHESIZER PROMPT (The "Master" Prompt)
+# =============================================================================
+
+RESPONSE_SYNTHESIZER_PROMPT = """Você é o Sintetizador de Respostas Inteligente da {tenant_name}.
+Sua função é transformar dados brutos e contexto em uma resposta perfeita para o WhatsApp.
+
+---
+
+### 1. PERSONALIDADE E TOM (Configuração Base)
+O tom de voz definido para esta marca é:
+"{brand_voice}"
+
+### 2. PROTOCOLO DE ADAPTAÇÃO (A Inteligência Real)
+Você deve modular o tom base dependendo do estado do cliente:
+- **Cenário Padrão:** Use o "{brand_voice}" totalmente.
+- **Cliente Frustrado/Irritado:** IGNORE o tom base. Mude imediatamente para **PROFISSIONAL, EMPÁTICO E OBJETIVO**. Zero piadas, zero excesso de emojis. Foco na resolução.
+- **Cliente Técnico/Direto:** Seja sucinto. Responda a pergunta e pronto.
+- **Cliente Confuso:** Seja didático e paciente.
+
+---
+
+### 3. REGRAS DE INTEGRIDADE DE DADOS (Grounding) ⚠️ CRÍTICO
+Você receberá dados do sistema (preços, links, estoque).
+- **Regra do Espelho:** Se o dado diz "R$ 199,90", você escreve "R$ 199,90". NUNCA arredonde ou invente.
+- **Links de Checkout:** Se houver um link gerado no contexto, ele é SAGRADO. Ele deve ir em uma linha separada no final.
+- **Ausência de Dados:** Se o contexto diz "product_not_found", NÃO invente que tem. Diga que não encontrou e pergunte se ele quer ver outra coisa.
+
+#### ANTI-ALUCINAÇÃO DE ATRIBUTOS (OBRIGATÓRIO)
+Quando o cliente perguntar sobre atributos do produto (materiais, antialérgico, hipoalergênico, biodegradável, vegano, etc.):
+1. **VERIFIQUE A DESCRIÇÃO TÉCNICA** fornecida no contexto.
+2. **SE A INFORMAÇÃO NÃO ESTIVER LÁ**: Diga EXATAMENTE: "Não tenho essa informação específica na descrição do produto. Posso verificar com a equipe se quiser!"
+3. **NUNCA** invente atributos. Dizer que é "antialérgico" quando não é pode causar reações alérgicas graves. VOCÊ PODE SER RESPONSÁVEL.
+4. **NUNCA** extrapole: "materiais de alta qualidade geralmente são bem aceitos" é PROIBIDO. Isso é uma suposição não-factual.
+
+#### ANTI-LINK-FAKE (MORDAÇA) 🚫
+**REGRA CRÍTICA**: Você está PROIBIDO de escrever "link", "clique aqui", "🔗", ou qualquer menção a URL de compra SE e SOMENTE SE:
+- O campo `LINK DE CHECKOUT` NÃO estiver presente nos Dados do Sistema abaixo.
+
+Se NÃO houver link no contexto, você DEVE:
+1. apresentar o produto normalmente
+2. perguntar: "Quer que eu gere o link de compra pra você?" ou "Posso mandar o link pra você?"
+3. NUNCA escrever "[LINK]", "(link aqui)", ou qualquer placeholder de URL
+
+**Se o cliente já demonstrou intenção de compra e não há link ainda**, diga algo como:
+"Show! Deixa eu gerar o link pra você... 🔥" (e o sistema gerará na próxima interação)
+
+---
+
+### 4. REGRAS DE CONTINUIDADE (Anti-Loop) ⚠️ CRÍTICO
+- **ZERO SAUDAÇÕES REPETIDAS**: Analise o histórico. Se você (bot) OU o cliente já disseram "Oi", "Olá", "Opa", "Tudo bem" nas últimas 3 mensagens, É PROIBIDO começar com saudação. Vá DIRETO ao assunto.
+- **Não seja redundante**: Se você já cumprimentou, NÃO cumprimente de novo.
+- **Fluidez natural**: Se o cliente respondeu uma pergunta sua, continue como se estivessem no meio de uma conversa (porque estão).
+- **Teste mental**: Antes de escrever "Opa!", pergunte-se: "Eu já disse isso?". Se sim, CORTE.
+
+---
+
+### 4.5. MODO CAIXA REGISTRADORA 💰 (Quando há Link de Checkout)
+Se o contexto contém um LINK DE CHECKOUT:
+1. **FOCO TOTAL NO FECHAMENTO**: O link é a estrela. Apresente-o de forma clara e destacada.
+2. **AMNÉSIA SELETIVA**: Ignore/esqueça dúvidas passadas que o cliente já superou. Se ele perguntou sobre alergia antes mas agora quer comprar, NÃO relembre a alergia.
+3. **ZERO RESUMOS LONGOS**: Nada de "Sobre o produto, ele tem corrente dupla...". O cliente já sabe. Vá direto: "Aqui está seu link! 🎉"
+4. **NÃO RECONFIRME DÚVIDAS RESOLVIDAS**: Se você já respondeu algo (ex: "não tenho info sobre alergia"), NÃO repita isso.
+5. **ESTRUTURA IDEAL**:
+   ```
+   Perfeito! Aqui está o link pra garantir o seu [Produto]:
+   
+   🔗 [LINK]
+   
+   É só clicar e finalizar! Qualquer coisa, me avisa. 😊
+   ```
+
+---
+
+### 5. GUIA DE ESTILO WHATSAPP
+- **Negrito:** Use asteriscos (*) para destacar **preços**, **nomes de produtos** e **prazos**. Ex: *R$ 50,00*.
+- **Espaçamento:** Pule uma linha entre parágrafos. Textos longos são ignorados.
+- **Listas:** Use hifens (-) para listas.
+- **Emojis:** Use com moderação (máximo 2 por mensagem), a menos que o "{brand_voice}" exija explicitamente mais.
+
+---
+
+### 6. CONTEXTO DA CONVERSA
+Histórico Recente:
+{conversation_history}
+
+Dados do Sistema (Produtos/Links/Erros):
+{system_data_payload}
+
+---
+
+### SUA MISSÃO AGORA
+Gere a resposta para o usuário.
+1. **CHECKPOINT DE LINK**: O payload tem LINK DE CHECKOUT? Se SIM → MODO CAIXA REGISTRADORA. Resposta curta focada no link.
+2. Verifique o sentimento do histórico (para calibrar o tom).
+3. **VERIFIQUE SE JÁ CUMPRIMENTOU** - Se sim, NÃO repita.
+4. Verifique se há dados obrigatórios (preços) no payload.
+5. Escreva a resposta aplicando a personalidade (ou o override de segurança).
+6. Termine com uma pergunta ou Call to Action (CTA) claro, se apropriado.
+"""
+
+
 def _get_brand_voice_guidelines(tenant: TenantConfig) -> str:
     """Get brand voice guidelines from map or use tenant's custom voice."""
     voice_key = (tenant.brand_voice or "profissional").lower().strip()
@@ -291,8 +393,7 @@ def _get_brand_voice_guidelines(tenant: TenantConfig) -> str:
         real_key = BRAND_VOICE_ALIASES[voice_key]
         return BRAND_VOICE_MAP[real_key]
     
-    # 3. Fallback: If unknown, default to Profissional (per user request)
-    # Unless it looks like a custom prompt (long text)
+    # 3. Fallback: If unknown, default to Profissional
     if len(voice_key) > 50:
         # Custom brand voice from tenant config (rare case)
         return f"""
@@ -304,127 +405,8 @@ REGRAS: {voice_key}
     return BRAND_VOICE_MAP["profissional"]
 
 
-def build_sales_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Sales agent."""
-    brand_voice = _get_brand_voice_guidelines(tenant)
-    
-    return f"""Você é a assistente de vendas da {tenant.name}.
-
-## BRAND VOICE
-{brand_voice}
-
-{GOLDEN_RULES}
-
-## CONTEXTO - VENDAS
-Você está ajudando clientes a comprar produtos da {tenant.name}.
-
-## COMPORTAMENTO
-- Seja solícita ao apresentar produtos
-- Forneça o link de checkout de forma clara
-- Se houver erro no link, informe e ofereça nova tentativa
-- Se não tiver link, pergunte qual produto o cliente deseja
-
-## GROUNDING RULES (DADOS CRÍTICOS)
-- Se selected_products existe → liste EXATAMENTE os produtos fornecidos
-- Use os TÍTULOS e PREÇOS exatos dos dados
-- Numere os produtos: 1, 2, 3...
-- NUNCA invente produtos ou preços
-- Se available_variants existe → liste EXATAMENTE as variantes com títulos e preços
-- Se checkout_link existe → inclua a URL EXATA no FINAL da mensagem
-- Se last_action_success = False → reconheça o erro com empatia
-- NUNCA invente URLs, IDs ou valores monetários
-
-## EXEMPLOS
-"Encontrei o produto que você procurava! Quer que eu gere o link?"
-"Pronto, aqui está o link: [link]"
-"Ops, esse link deu problema. Vou gerar outro, um momento."
-
-## REGRA ESPECIAL PARA LINKS
-Se last_action = "action_generate_link" e last_action_success = True:
-- O link JÁ foi gerado e está sendo enviado junto com sua mensagem
-- NÃO pergunte "quer que eu gere o link?"
-- APENAS confirme de forma natural: "Aqui está!" ou "Pronto! 😊"
-"""
-
-
-def build_support_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Support agent."""
-    brand_voice = _get_brand_voice_guidelines(tenant)
-    
-    return f"""Você é a assistente de suporte da {tenant.name}.
-
-## BRAND VOICE
-{brand_voice}
-
-{GOLDEN_RULES}
-
-## CONTEXTO - SUPORTE
-Você está dando suporte pós-venda para clientes da {tenant.name}.
-
-## COMPORTAMENTO
-- Demonstre compreensão quando há problemas com pedidos
-- Forneça informações de rastreio de forma clara
-- Se houver atraso, explique a situação
-- Pergunte se pode ajudar em mais alguma coisa
-
-## GROUNDING RULES (DADOS CRÍTICOS)
-- Se tracking_url existe → inclua a URL EXATA no FINAL
-- Se order_id existe → mantenha EXATO (nunca mude IDs)
-- Se last_action_success = False → reconheça o erro com empatia
-- NUNCA invente status, prazos, URLs ou valores
-
-## QUANDO NÃO TEM DADOS DO PEDIDO
-- NÃO mencione prazos ou SLA específicos
-- NÃO finja que vai verificar algo
-- APENAS peça o número do pedido ou email
-
-## EXEMPLOS
-"Entendo sua preocupação. Vou verificar o status do seu pedido."
-"Localizei! Está em trânsito, aqui o rastreio: [link]"
-"Houve um atraso. Já abri um chamado junto à transportadora."
-"""
-
-
-def build_store_qa_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Store Q&A agent with strict RAG grounding."""
-    brand_voice = _get_brand_voice_guidelines(tenant)
-    
-    return f"""Você é a assistente de atendimento da {tenant.name}.
-
-## BRAND VOICE
-{brand_voice}
-
-{GOLDEN_RULES}
-
-## CONTEXTO - DÚVIDAS DA LOJA
-Você está respondendo dúvidas sobre políticas e informações da {tenant.name}.
-
-## REGRAS ABSOLUTAS DE GROUNDING (NUNCA VIOLAR)
-
-1. **NUNCA INVENTE INFORMAÇÕES**
-   - Você SÓ pode usar informações do [Manual da Loja] fornecido
-   - Se a informação NÃO está no manual: "Não tenho essa informação no momento. Posso verificar com a equipe."
-   - NUNCA invente prazos, preços, políticas ou qualquer dado
-
-2. **FRASES PROIBIDAS** (só use se estiver no manual):
-   - "O prazo é de X dias"
-   - "O frete custa R$X"
-   - "Aceitamos..."
-   - "A política é..."
-
-3. **QUANDO NÃO SOUBER**:
-   - "Não tenho essa informação no momento. Posso verificar com a equipe."
-   - "Para informações mais detalhadas, nossa equipe pode ajudar melhor."
-
-## COMPORTAMENTO
-- Seja clara e objetiva
-- Se o manual tiver a resposta, use exatamente as informações dele
-- Se não tiver, admita e ofereça verificar
-"""
-
-
 # =============================================================================
-# CONTEXT BUILDING (improved with additional_context from user's prompt)
+# CONTEXT BUILDING (Payload Construction)
 # =============================================================================
 
 
@@ -434,241 +416,173 @@ def _format_price(value: str | None) -> str:
     return f"R$ {value}"
 
 
-def _collect_error_details(state: ConversationState) -> str:
-    errors = []
-    for key, value in state.metadata.items():
-        if key.endswith("_error") and value:
-            errors.append(f"{key}={value}")
-    out_of_stock_message = state.metadata.get("out_of_stock_message")
-    if out_of_stock_message:
-        errors.append(f"out_of_stock_message={out_of_stock_message}")
-    if state.metadata.get("out_of_stock"):
-        errors.append("out_of_stock=True")
-    return "; ".join(errors)
-
-
-def _build_additional_context(state: ConversationState) -> str:
-    """Build additional context based on last action (from user's prompt)."""
+def _get_conversation_history_string(state: ConversationState) -> str:
+    """Build recent conversation history string."""
+    if not state.conversation_history:
+        return "(Nenhuma mensagem anterior)"
+    
     lines = []
+    # Use last 6 messages
+    for entry in state.conversation_history[-6:]:
+        role = "👤 Cliente" if entry["role"] == "user" else "🤖 Você"
+        message = entry.get("message", entry.get("content", ""))
+        lines.append(f"{role}: {message}")
     
-    if state.last_action == "action_generate_link" and state.last_action_success:
-        lines.append("✓ Você ACABOU de gerar um link de checkout. Envie-o de forma natural.")
-        lines.append("CRÍTICO: O link JÁ FOI GERADO. NÃO pergunte se quer gerar. APENAS envie.")
-        checkout_link = state.metadata.get("checkout_link")
-        if checkout_link:
-            lines.append(f"  Link: {checkout_link}")
-    
-    elif state.last_action == "action_search_products" and state.last_action_success:
-        count = len(state.selected_products or [])
-        lines.append(f"✓ Você ACABOU de buscar produtos. Encontrou {count} produtos.")
-        lines.append("  Liste os produtos encontrados para o cliente escolher.")
-    
-    elif state.last_action == "action_select_variant" and state.last_action_success:
-        lines.append("✓ Cliente ACABOU de escolher uma variante.")
-        lines.append("  Confirme a escolha e ofereça gerar o link.")
-    
-    elif state.last_action == "action_resolve_product" and state.last_action_success:
-        lines.append("✓ Você ACABOU de resolver um link de produto.")
-        product_title = state.metadata.get("product_title")
-        if product_title:
-            lines.append(f"  Produto: {product_title}")
-    
-    elif state.last_action_success is False:
-        lines.append("⚠️ A ÚLTIMA AÇÃO FALHOU.")
-        lines.append("  Reconheça o problema e ofereça uma alternativa.")
-        error = _collect_error_details(state)
-        if error:
-            lines.append(f"  Erro: {error}")
-    
-    return "\n".join(lines) if lines else ""
+    # Add current message if present and not in history yet (rare edge case)
+    if state.last_user_message and (not lines or state.last_user_message not in lines[-1]):
+        lines.append(f"👤 Cliente: {state.last_user_message}")
+        
+    return "\n".join(lines)
 
 
-def _build_context_prompt(
-    state: ConversationState,
-    tenant: TenantConfig,
-    knowledge_context: str,
+def _get_system_data_payload(
+    state: ConversationState, 
+    tenant: TenantConfig, 
+    domain: str, 
+    knowledge_context: str
 ) -> str:
-    """Build the context/user prompt with all relevant state info."""
+    """Build the 'System Data Payload' containing strict grounding facts."""
     lines = []
 
-    # Conversation history
-    if state.conversation_history:
-        lines.append("[Histórico da Conversa]")
-        for entry in state.conversation_history[-6:]:
-            role = "👤 Cliente" if entry["role"] == "user" else "🤖 Você"
-            message = entry.get("message", entry.get("content", ""))
-            lines.append(f"{role}: {message}")
-        lines.append("")
+    # 1. LAST ACTION STATUS (Critical for feedback)
+    if state.last_action:
+        status_icon = "✅" if state.last_action_success else "⚠️"
+        lines.append(f"LAST_ACTION: {state.last_action} ({status_icon} Success: {state.last_action_success})")
+        if not state.last_action_success:
+            lines.append("   → ERRO: A última ação falhou. Explique o problema e ofereça alternativa.")
+            # Add error details
+            if state.system_error:
+                lines.append(f"   → SYSTEM ERROR: {state.system_error}")
+            # Check soft_context for specific errors
+            for k, v in state.soft_context.items():
+                if "error" in k:
+                    lines.append(f"   → DEBUG INFO: {k}={v}")
 
-    # Original complaint (persistent context)
-    if state.original_complaint:
-        lines.append("[Problema Original do Cliente]")
-        lines.append(f"{state.original_complaint}")
-        lines.append("")
+    # 2. CRITICAL LINKS & IDs
+    if state.checkout_link:
+        lines.append(f"\n🔗 CHECKOUT_LINK (SAGRADO - Envie exatamente): {state.checkout_link}")
+        # Tip for the model
+        if state.last_action == "action_generate_link" and state.last_action_success:
+             lines.append("   (O link acabou de ser gerado. Envie-o agora!)")
 
-    # Current user message
-    lines.append("[Mensagem Atual do Cliente]")
-    lines.append(f'"{state.last_user_message or "(sem mensagem)"}"')
-    lines.append("")
+    if state.tracking_url:
+        lines.append(f"\n🚚 TRACKING_URL: {state.tracking_url}")
 
-    # Additional context based on last action (from user's prompt)
-    additional = _build_additional_context(state)
-    if additional:
-        lines.append("[O que Acabou de Acontecer]")
-        lines.append(additional)
-        lines.append("")
+    if state.order_id:
+        lines.append(f"📦 ORDER_ID: {state.order_id}")
 
-    # Critical data
-    current_domain = state.domain or "sales"
-    lines.append("[DADOS CRÍTICOS - use EXATAMENTE como fornecidos]")
-    
-    checkout_link = state.metadata.get("checkout_link")
-    tracking_url = state.tracking_url
-    lines.append(f"- checkout_link: {checkout_link or '(nenhum)'}")
-    lines.append(f"- tracking_url: {tracking_url or '(nenhum)'}")
-    lines.append(f"- order_id: {state.order_id or '(nenhum)'}")
-    lines.append(f"- variant_id: {state.selected_variant_id or '(nenhum)'}")
-
-    # Product info
-    product_title = state.metadata.get("product_title")
-    product_price = state.metadata.get("product_price")
-    if product_title or product_price:
-        price_text = _format_price(product_price)
-        if price_text:
-            lines.append(f"- product: {product_title or '(none)'} - {price_text}")
-        else:
-            lines.append(f"- product: {product_title or '(none)'}")
-    
-    # Product description for answering questions
-    product_description = state.metadata.get("product_description")
-    if product_description:
-        clean_desc = re.sub(r'<[^>]+>', '', product_description).strip()
-        if clean_desc:
-            lines.append(f"- product_description: {clean_desc[:500]}")
-    
-    product_tags = state.metadata.get("product_tags")
-    if product_tags:
-        lines.append(f"- product_tags: {product_tags}")
-
-    # Selected variant
-    selected_variant_title = state.metadata.get("selected_variant_title")
-    selected_variant_price = state.metadata.get("selected_variant_price")
-    if selected_variant_title or selected_variant_price:
-        price_text = _format_price(selected_variant_price)
-        if price_text:
-            lines.append(f"- selected_variant: {selected_variant_title or '(none)'} - {price_text}")
-        else:
-            lines.append(f"- selected_variant: {selected_variant_title or '(none)'}")
-
-    # Selected products
-    if state.selected_products:
-        lines.append("- selected_products:")
-        for idx, product in enumerate(state.selected_products, start=1):
-            title = product.get("title") or "Produto"
-            price = _format_price(product.get("price"))
-            desc = product.get("description", "")
-            if desc:
-                desc = re.sub(r'<[^>]+>', '', desc).strip()[:200]
+    # 3. PRODUCT DATA (Sales Flow)
+    if domain == "sales":
+        # Get focused product ID if set
+        focused_product_id = state.soft_context.get("focused_product_id")
+        selected_variant_id = state.soft_context.get("selected_variant_id")
+        
+        # PRIORITY 1: Checkout link exists - show only the carted product
+        if state.checkout_link and state.selected_products:
+            focused_product = None
             
-            if price:
-                lines.append(f"  {idx}. {title} - {price}")
-            else:
-                lines.append(f"  {idx}. {title}")
+            if selected_variant_id:
+                for p in state.selected_products:
+                    for v in p.get("variants") or []:
+                        if str(v.get("id")) == str(selected_variant_id):
+                            focused_product = p
+                            break
+                    if focused_product:
+                        break
             
-            if desc:
-                lines.append(f"     ({desc})")
-    else:
-        lines.append("- selected_products: (nenhum)")
-
-    # Available variants
-    # Available variants
-    if state.available_variants:
-        lines.append("- available_variants:")
-        lines.append("  (IMPORTANTE: O produto tem variantes. Pergunte qual o cliente prefere)")
-        for idx, variant in enumerate(state.available_variants, start=1):
-            title = variant.get("title") or "Opção"
-            price = _format_price(variant.get("price"))
-            available = variant.get("available", True)
-            if isinstance(available, str): 
-                available = available.lower() == "true"
-            status = "✅ Disponível" if available else "❌ Esgotado"
+            if not focused_product and state.selected_products:
+                focused_product = state.selected_products[0]
             
-            if price:
-                lines.append(f"  {idx}. {title} - {price} ({status})")
-            else:
-                lines.append(f"  {idx}. {title} ({status})")
-    else:
-        lines.append("- available_variants: (nenhum)")
+            if focused_product:
+                title = focused_product.get("title", "Produto")
+                price = _format_price(focused_product.get("price"))
+                lines.append(f"\n🛒 PRODUTO NO CARRINHO: {title} - {price}")
+                v_title = state.soft_context.get("selected_variant_title")
+                if v_title:
+                    lines.append(f"   → Variante: {v_title}")
+                lines.append("   (Checkout link já gerado. NÃO liste outros produtos.)")
+        
+        # PRIORITY 2: focused_product_id set - User is asking about a SPECIFIC product
+        # Show ONLY that product with FULL DESCRIPTION for grounding
+        elif focused_product_id and state.selected_products:
+            focused_product = None
+            for p in state.selected_products:
+                if str(p.get("product_id") or p.get("id")) == str(focused_product_id):
+                    focused_product = p
+                    break
+            
+            if focused_product:
+                title = focused_product.get("title", "Produto")
+                price = _format_price(focused_product.get("price"))
+                description = focused_product.get("description", "")
+                
+                lines.append(f"\n🎯 PRODUTO EM FOCO (Responda sobre ESTE produto):")
+                lines.append(f"   Nome: {title}")
+                lines.append(f"   Preço: {price}")
+                if description:
+                    # Include FULL description for grounding to prevent hallucination
+                    lines.append(f"   📋 DESCRIÇÃO TÉCNICA: {description}")
+                    lines.append("   ⚠️ IMPORTANTE: Responda sobre materiais/detalhes APENAS com base na descrição acima.")
+                    lines.append("   ⚠️ Se a informação não estiver aqui, diga: 'Não tenho essa informação específica'.")
+                else:
+                    lines.append("   (Sem descrição detalhada disponível)")
+                
+                # Show variant options if available
+                if state.available_variants:
+                    lines.append("\n   Variantes disponíveis:")
+                    for v in state.available_variants[:5]:
+                        available = v.get("available", True)
+                        status = "" if available else "(ESGOTADO)"
+                        lines.append(f"     - {v.get('title', 'Opção')} {status}")
+                
+                lines.append("\n   (NÃO liste outros produtos. Foque neste.)")
+        
+        # PRIORITY 3: No focus - Vitrine mode - show list for selection
+        elif state.selected_products:
+            lines.append("\n🛒 PRODUTOS ENCONTRADOS (Vitrine):")
+            for idx, p in enumerate(state.selected_products, 1):
+                title = p.get("title", "Produto")
+                price = _format_price(p.get("price"))
+                lines.append(f"   {idx}. {title} - {price}")
+            lines.append("   (O cliente pode escolher ou perguntar sobre um deles)")
+        
+        # Search Results Context
+        if state.last_action == "action_search_products":
+             count = state.soft_context.get("search_results_count", 0)
+             lines.append(f"\n🔍 BUSCA RECENTE: Encontrei {count} produtos para '{state.search_query or 'busca'}'")
+             if count == 0:
+                 lines.append("   → Nenhum produto encontrado. Avise o cliente.")
 
-    lines.append("")
-    
-    # Contextual data
-    lines.append("[DADOS CONTEXTUAIS]")
-    lines.append(f"- intent: {state.intent}")
-    lines.append(f"- last_action: {state.last_action or '(nenhum)'}")
-    lines.append(f"- last_action_success: {state.last_action_success}")
-    lines.append(f"- frustration_level: {state.frustration_level}/5")
-    lines.append(f"- sentiment: {state.sentiment_level}")
-
-    error_details = _collect_error_details(state)
-    if error_details:
-        lines.append(f"- errors: {error_details}")
-
-    # Domain-specific data
-    if current_domain == "sales":
-        search_query = state.search_query or state.metadata.get("search_query")
-        if search_query:
-            lines.append(f"- search_query: {search_query}")
-        if state.metadata.get("out_of_stock"):
-            lines.append("- out_of_stock: True")
-    elif current_domain == "support":
+    # 4. SUPPORT DATA
+    if domain == "support":
         if state.customer_email:
-            lines.append(f"- customer_email: {state.customer_email}")
-        ticket_id = state.metadata.get("ticket_id")
-        if ticket_id:
-            lines.append(f"- ticket_id: {ticket_id}")
-        order_status = state.metadata.get("order_status")
-        if order_status:
-            lines.append(f"- order_status: {order_status}")
-        fulfillment_status = state.metadata.get("fulfillment_status")
-        if fulfillment_status:
-            lines.append(f"- fulfillment_status: {fulfillment_status}")
-        tracking_number = state.metadata.get("tracking_number")
-        if tracking_number:
-            lines.append(f"- tracking_number: {tracking_number}")
-        if state.ticket_opened:
-            lines.append("- ticket_opened: True")
+            lines.append(f"📧 EMAIL: {state.customer_email}")
+        
+        # Ticket/Refund context
+        if state.soft_context.get("ticket_id"):
+            lines.append(f"🎫 TICKET CRIADO: #{state.soft_context['ticket_id']}")
+        
+        status = state.soft_context.get("order_status")
+        if status:
+            lines.append(f"📊 STATUS PEDIDO: {status}")
 
-    # FAQ answer if available
-    faq_answer = state.metadata.get("faq_answer")
-    if faq_answer:
-        lines.append(f"- faq_answer: {faq_answer}")
-
-    # Knowledge context (RAG)
-    if knowledge_context:
-        lines.append("")
-        lines.append(knowledge_context)
-
-    # Instructions
-    lines.append("")
-    lines.append("[INSTRUÇÃO FINAL]")
-    lines.append("Gere UMA resposta natural e humanizada (1-4 linhas).")
-    lines.append("Sem markdown. Sem aspas. Apenas o texto da mensagem.")
-
-    # Special cases
-    if state.domain == "support" and not state.order_id and not state.customer_email:
-        lines.append("")
-        lines.append("⚠️ ATENÇÃO: Faltam dados do pedido.")
-        lines.append("- NÃO mencione prazos ou status específicos")
-        lines.append("- NÃO finja que vai verificar algo")
-        lines.append("- Apenas peça o número do pedido ou email")
+    # 5. KNOWLEDGE BASE (RAG)
+    if knowledge_context and "Nenhuma informação" not in knowledge_context:
+        lines.append(f"\n📚 BASE DE CONHECIMENTO (RAG):\n{knowledge_context}")
     
-    if state.domain == "support" and state.last_action and state.last_action_success is False:
-        lines.append("")
-        lines.append("⚠️ ATENÇÃO: A última ação FALHOU.")
-        lines.append("- Não diga que 'vou verificar' ou 'encontrei'")
-        lines.append("- Informe que não foi possível com os dados fornecidos")
-        lines.append("- Peça uma informação alternativa")
+    # 6. MEMORY / INTENT CONTEXT
+    lines.append(f"\n🧠 CONTEXTO ATUAL:")
+    lines.append(f"- Intenção: {state.intent}")
+    lines.append(f"- Frustração: {state.frustration_level}/5")
+    # Using RAG context if explicit memory is needed
+    if state.rag_context:
+        lines.append(f"- RAG Memory: {state.rag_context[:200]}...")
+
+    # 7. BLOCKING INFO (What we need to ask)
+    if state.blocking_info:
+        lines.append(f"\n⚠️ DADOS FALTANTES (Pergunte ao cliente):")
+        for info in state.blocking_info:
+            lines.append(f"- {info}")
 
     return "\n".join(lines)
 
@@ -684,80 +598,68 @@ def generate_humanized_response(
     domain: str,
     categories: list[str] | None = None,
 ) -> str:
-    """Generate a humanized LLM response.
+    """Generate a humanized LLM response using the Response Synthesizer."""
     
-    Args:
-        state: Current conversation state
-        tenant: Tenant configuration
-        domain: Current domain (sales, support, store_qa)
-        categories: Optional knowledge base categories to fetch
+    # 1. Get RAG Context (semantic search)
+    user_msg = state.last_user_message or ""
+    # Only fetch RAG if relevant (Context optimization)
+    if domain == "store_qa" or "como" in user_msg.lower() or "onde" in user_msg.lower():
+         knowledge_context = get_knowledge_context(
+            tenant.tenant_id, 
+            categories,
+            user_message=user_msg
+        )
+    else:
+        # Minimal RAG for transactional flows to save tokens/noise
+        knowledge_context = "" 
     
-    Returns:
-        Generated humanized response
+    # 2. Build Components
+    history_str = _get_conversation_history_string(state)
+    payload_str = _get_system_data_payload(state, tenant, domain, knowledge_context)
+    brand_voice_guidelines = _get_brand_voice_guidelines(tenant)
     
-    Raises:
-        Exception: If LLM call fails - no fallback responses
-    """
-    # Get knowledge context - use semantic search for store_qa
-    user_msg = state.last_user_message if domain == "store_qa" else None
-    knowledge_context = get_knowledge_context(
-        tenant.tenant_id, 
-        categories,
-        user_message=user_msg
+    # 3. Format Master Prompt
+    system_prompt = RESPONSE_SYNTHESIZER_PROMPT.format(
+        tenant_name=tenant.name,
+        brand_voice=brand_voice_guidelines,
+        conversation_history=history_str,
+        system_data_payload=payload_str
     )
     
     # Debug
     if os.getenv("DEBUG"):
-        print(f"[RAG] Domain: {domain}")
-        print(f"[RAG] Categories: {categories}")
-        print(f"[RAG] User message for search: {user_msg}")
-        print(f"[RAG] Knowledge context (first 300 chars): {knowledge_context[:300]}...")
+        print(f"\n[SYNTHESIZER] Payload:\n{payload_str}\n")
     
-    # Select system prompt based on domain
-    if domain == "sales":
-        system_prompt = build_sales_prompt(tenant)
-    elif domain == "support":
-        system_prompt = build_support_prompt(tenant)
-    else:
-        system_prompt = build_store_qa_prompt(tenant)
-    
-    # Build context prompt
-    context_prompt = _build_context_prompt(state, tenant, knowledge_context)
-    
-    # Call LLM
+    # 4. Call LLM
     model = get_model_name()
-    if os.getenv("DEBUG"):
-        print(f"[LLM] Using model: {model}")
+    llm = ChatOpenAI(model=model, temperature=0.6) # Slightly lower temp for adherence
     
-    llm = ChatOpenAI(model=model, temperature=0.7)
+    # We pass the prompt as System Message. 
+    # The prompt explicitly contains "Contexto da Conversa" so we don't strictly need a HumanMessage 
+    # with the last input, but we add a trigger to start generation.
     result = llm.invoke([
         SystemMessage(content=system_prompt),
-        HumanMessage(content=context_prompt),
+        HumanMessage(content="Gere a resposta agora."),
     ])
     
     response = (result.content or "").strip()
     
-    # Capture token usage
+    # 5. Metadata & Cleanup
     usage_raw = result.response_metadata.get("token_usage")
-    state.metadata["token_usage_agent"] = normalize_token_usage(usage_raw)
+    state.soft_context["token_usage_agent"] = normalize_token_usage(usage_raw)
     
     if not response:
         raise ValueError("LLM returned empty response")
     
-    # Clean response - remove quotes if wrapped
+    # Clean quotes
     if response.startswith('"') and response.endswith('"'):
         response = response[1:-1]
-    if response.startswith("'") and response.endswith("'"):
-        response = response[1:-1]
     
-    # Ensure important links are included
-    if domain == "sales":
-        checkout_link = state.metadata.get("checkout_link")
-        if checkout_link and checkout_link not in response:
-            response = f"{response}\n\n{checkout_link}"
-    elif domain == "support":
-        tracking_url = state.tracking_url
-        if tracking_url and tracking_url not in response:
-            response = f"{response}\n\n{tracking_url}"
+    # Safety Net: Ensure link is present if we just generated it
+    # The prompt helps, but code is law.
+    checkout_link = state.checkout_link
+    if domain == "sales" and checkout_link and checkout_link not in response:
+        if state.last_action == "action_generate_link":
+            response += f"\n\n{checkout_link}"
     
     return response
