@@ -41,7 +41,12 @@ class EvolutionAdapter(WhatsAppAdapterBase):
         """Parse Evolution API MESSAGES_UPSERT event into standardized message."""
         event = payload.get("event", "")
         if event not in ("messages.upsert", "MESSAGES_UPSERT"):
+            print(f"DEBUG: Ignoring event {event}", flush=True)
             return None
+        
+        # DEBUG RAW PAYLOAD
+        import json
+        print(f"DEBUG: Incoming Webhook Payload: {json.dumps(payload)}", flush=True)
         
         data = payload.get("data", {})
         key = data.get("key", {})

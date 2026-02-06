@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
+
+
 # Simple in-memory rate limiter
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
 RATE_LIMIT_WINDOW = 60  # seconds
@@ -225,15 +227,15 @@ async def process_consolidated_message(
                 logger.info(f"🎯 Detected user confirmation: '{text}' → marking as continuation")
                 
                 # Add flags for Router
-                state.metadata['user_confirmed_previous_offer'] = True
-                state.metadata['confirmation_text'] = text
-                state.metadata['is_simple_confirmation'] = True
+                state.soft_context['user_confirmed_previous_offer'] = True
+                state.soft_context['confirmation_text'] = text
+                state.soft_context['is_simple_confirmation'] = True
                 
                 # Maintain current domain/intent
                 if state.domain:
-                    state.metadata['keep_current_domain'] = True
+                    state.soft_context['keep_current_domain'] = True
                 if state.intent and state.intent != 'general':
-                    state.metadata['keep_current_intent'] = True
+                    state.soft_context['keep_current_intent'] = True
         
         # Prepare context for Router
         context = {
@@ -241,7 +243,7 @@ async def process_consolidated_message(
             "session_id": state.session_id,
             "last_domain": state.domain,
             "last_intent": state.intent,
-            "has_variant_id": bool(state.selected_variant_id),
+            "has_variant_id": bool(state.soft_context.get("selected_variant_id")),
             "has_order_id": bool(state.order_id),
             "has_selected_products": bool(state.selected_products),
             "selected_products_count": len(state.selected_products) if state.selected_products else 0,
@@ -262,7 +264,7 @@ async def process_consolidated_message(
         state.set_intent(decision.intent)
         
         # Only switch domain if not forcing current one (e.g. simple confirmation)
-        if not state.metadata.get('keep_current_domain'):
+        if not state.soft_context.get('keep_current_domain'):
             state.domain = decision.domain
         
         apply_entities_to_state(state, decision.entities)
@@ -440,6 +442,8 @@ async def shopify_webhook(
 
 
 @router.post("/whatsapp/{tenant_id}/messages-upsert", status_code=status.HTTP_200_OK, include_in_schema=False)
+@router.post("/whatsapp/{tenant_id}/messages-update", status_code=status.HTTP_200_OK, include_in_schema=False)
+@router.post("/whatsapp/{tenant_id}/send-message", status_code=status.HTTP_200_OK, include_in_schema=False)
 @router.post(
     "/whatsapp/{tenant_id}",
     status_code=status.HTTP_200_OK,
@@ -453,8 +457,21 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     
     # Get tenant config (Async)
     try:
-        registry = TenantRegistry()
-        tenant = await registry.get_async(tenant_id, use_cache=True)
+        if tenant_id == "demo":
+            # Mock demo tenant for local debugging
+            from app.core.tenancy import TenantConfig
+            tenant = TenantConfig(
+                tenant_id="demo",
+                name="Demo Store",
+                whatsapp_provider="evolution",
+                whatsapp_instance_url="https://nouvaris-evolution-api.ojdb99.easypanel.host",
+                whatsapp_api_key="3507B4BFABD9-4F3B-B87E-E441338CF369",
+                whatsapp_instance_name="nouvaris",
+                active=True
+            )
+        else:
+            registry = TenantRegistry()
+            tenant = await registry.get_async(tenant_id, use_cache=True)
     except ValueError:
         logger.error(f"❌ Tenant not found in registry: {tenant_id}")
         raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
