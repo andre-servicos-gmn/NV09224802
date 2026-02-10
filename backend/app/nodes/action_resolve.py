@@ -32,20 +32,20 @@ def action_resolve(state: ConversationState) -> ConversationState:
                 "intent": "general",
                 "cart_items": [],
                 "selected_products": [],
-                "selected_product_id": None,
-                "selected_variant_id": None,
-                "quantity": 1,
+                "checkout_link": None,
+                "soft_context": {},
+                "blocking_info": [],
+                "rag_context": None,
                 "order_id": None,
-                "ticket_opened": False,
+                # "ticket_opened": False, # Was not in new state explicit fields, maybe soft_context
+                # "needs_resolution": False, # Removed
                 "last_action": None,
                 "last_strategy": None,
                 "frustration_level": 0,
                 "needs_handoff": False,
                 "handoff_reason": None,
-                "needs_resolution": False,
                 # Maintain long-term memory
                 "conversation_history": [],
-                "conversation_summary": state.conversation_summary,
                 "facts": state.facts
             }
 

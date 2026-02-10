@@ -383,5 +383,25 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
                     rationale="Simple confirmation with product context → purchase",
                 )
     
+    # ==========================================================================
+    # Link request with product name ("gere o link do silver threader")
+    # When products are already selected and user requests a link for a specific
+    # product, classify as purchase_intent to avoid LLM misclassifying as search.
+    # ==========================================================================
+    link_request_patterns = [
+        r'(?:ger[ea]|manda|quero|envia)\s+(?:o\s+)?link',   # "gere o link", "manda o link"
+        r'link\s+(?:do|da|de|para)\s+',                      # "link do...", "link da..."  
+        r'quero\s+(?:o\s+)?(?:do|da|de)\s+',                 # "quero o do..."
+        r'(?:ger[ea]|manda)\s+(?:do|da|de)\s+',              # "gere do silver threader"
+    ]
+    if has_products and any(re.search(p, msg_lower) for p in link_request_patterns):
+        return RouterResult(
+            domain="sales",
+            intent="purchase_intent",
+            confidence=0.95,
+            ambiguous=False,
+            rationale="Link request with product context → purchase_intent",
+        )
+    
     # No obvious pattern, use LLM
     return None

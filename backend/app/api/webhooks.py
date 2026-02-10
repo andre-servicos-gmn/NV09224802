@@ -170,6 +170,55 @@ def _get_whatsapp_adapter(tenant) -> WhatsAppAdapterBase | None:
     return None
 
 
+def _split_message(text: str) -> list[str]:
+    """
+    Split a message into natural conversation chunks for WhatsApp.
+    
+    Always splits on paragraph boundaries (double newline) to simulate
+    a human sending multiple messages. Bullet lists stay with their intro.
+    Very short adjacent paragraphs get merged to avoid spammy single-word messages.
+    """
+    if not text:
+        return []
+    
+    text = text.strip()
+    
+    # Split by paragraph breaks
+    paragraphs = re.split(r'\n\n+', text)
+    paragraphs = [p.strip() for p in paragraphs if p.strip()]
+    
+    # Single paragraph or no breaks — send as-is
+    if len(paragraphs) <= 1:
+        return [text]
+    
+    # Group: attach bullet lists to their preceding intro line
+    chunks: list[str] = []
+    current_chunk = ""
+    
+    for para in paragraphs:
+        # Check if this paragraph starts with bullet points
+        is_bullet = bool(re.match(r'^[\-•\*\d]', para))
+        
+        if not current_chunk:
+            current_chunk = para
+        elif is_bullet and current_chunk and not re.match(r'^[\-•\*\d]', current_chunk.split('\n')[-1]):
+            # Bullet list right after a non-bullet intro → keep together
+            current_chunk += "\n\n" + para
+        elif len(current_chunk) < 60 and len(para) < 60:
+            # Both very short → merge to avoid spammy tiny messages
+            current_chunk += "\n\n" + para
+        else:
+            # Different paragraphs → separate messages
+            chunks.append(current_chunk)
+            current_chunk = para
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    # Final safety: never return empty chunks
+    return [c.strip() for c in chunks if c.strip()]
+
+
 async def process_consolidated_message(
     text: str, 
     tenant_id: str, 
@@ -291,19 +340,27 @@ async def process_consolidated_message(
             # Record sent message for anti-loop
             _record_sent_message(response_text)
             
-            # Note: run_main_graph likely adds to history, but we ensure it here if needed
-            # result_state.add_to_history("assistant", response_text) 
             save_session(tenant.tenant_id, session_id, result_state)
             
             await adapter.mark_as_read(message_id)
             
-            send_result = await adapter.send_text_message(
-                to=from_number,
-                text=response_text,
-            )
+            # Split into multiple messages for natural conversation feel
+            chunks = _split_message(response_text)
             
-            if not send_result.success:
-                logger.error(f"Failed to send WhatsApp response: {send_result.error}")
+            for i, chunk in enumerate(chunks):
+                send_result = await adapter.send_text_message(
+                    to=from_number,
+                    text=chunk,
+                )
+                
+                if not send_result.success:
+                    logger.error(f"Failed to send WhatsApp chunk {i+1}/{len(chunks)}: {send_result.error}")
+                    break
+                
+                # Human-like delay between messages (skip after last)
+                if i < len(chunks) - 1:
+                    delay = min(1.0 + len(chunk) / 200, 2.5)  # 1.0s–2.5s based on length
+                    await asyncio.sleep(delay)
         else:
             save_session(tenant.tenant_id, session_id, result_state)
             
@@ -442,8 +499,6 @@ async def shopify_webhook(
 
 
 @router.post("/whatsapp/{tenant_id}/messages-upsert", status_code=status.HTTP_200_OK, include_in_schema=False)
-@router.post("/whatsapp/{tenant_id}/messages-update", status_code=status.HTTP_200_OK, include_in_schema=False)
-@router.post("/whatsapp/{tenant_id}/send-message", status_code=status.HTTP_200_OK, include_in_schema=False)
 @router.post(
     "/whatsapp/{tenant_id}",
     status_code=status.HTTP_200_OK,
@@ -525,6 +580,13 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
         "event": "message_buffered", 
         "status": "processing_async"
     }
+
+
+# --- Catch-All: Silently ignore all other Evolution API event sub-routes ---
+@router.post("/whatsapp/{tenant_id}/{event_type}", status_code=status.HTTP_200_OK, include_in_schema=False)
+async def whatsapp_ignore_event(tenant_id: str, event_type: str):
+    """Silently ignore non-message events (presence-update, messages-update, send-message, etc.)."""
+    return {"success": True, "event": "ignored", "type": event_type}
 
 
 @router.get("/health", summary="Health check for webhook service")

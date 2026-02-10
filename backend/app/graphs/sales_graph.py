@@ -40,9 +40,29 @@ def _build_graph(tenant):
     )
 
     graph.add_edge("action_resolve_product", "respond")
-    graph.add_edge("action_search_products", "respond")
+    
+    # ACTION CHAINING: action_search_products pode ir para generate_link ou respond
+    graph.add_conditional_edges(
+        "action_search_products",
+        lambda state: state.next_step if state.next_step in ["action_generate_link", "respond"] else "respond",
+        {
+            "action_generate_link": "action_generate_link",
+            "respond": "respond",
+        },
+    )
+    
     graph.add_edge("action_select_product", "respond")
-    graph.add_edge("action_select_variant", "respond")
+    
+    # ACTION CHAINING: action_select_variant deve ir para generate_link quando variante selecionada
+    graph.add_conditional_edges(
+        "action_select_variant",
+        lambda state: "action_generate_link" if state.soft_context.get("selected_variant_id") else "respond",
+        {
+            "action_generate_link": "action_generate_link",
+            "respond": "respond",
+        },
+    )
+    
     graph.add_edge("action_generate_link", "respond")
     graph.add_edge("respond", END)
     graph.add_edge("handoff", END)

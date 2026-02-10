@@ -18,7 +18,7 @@ def store_qa_decide(state: ConversationState, tenant: TenantConfig) -> Conversat
     # CRITICAL RULE:
     # - If NOT handoff, this function MUST continue to evaluate missing_info and rag_answer.
     # - NEVER return early in the non-handoff path.
-    """
+
     from app.core.constants import INTENT_RETURN_EXCHANGE, INTENT_ORDER_COMPLAINT
 
     # A) Handoff path (only case where we return immediately)

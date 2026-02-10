@@ -48,6 +48,9 @@ class ConversationState(BaseModel):
     sentiment_score: float = 0.0          # -1.0 (Fúria) a 1.0 (Amor)
     needs_handoff: bool = False
     handoff_reason: Optional[str] = None
+    needs_resolution: bool = False
+    missing_info_needed: List[str] = Field(default_factory=list)
+    repeat_count: int = 0
     
     # --- FLUXO DE MENSAGEM ---
     last_user_message: Optional[str] = None

@@ -44,8 +44,10 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
     try:
         # Limpar contexto de outros dominios
-        state.metadata.pop("checkout_link", None)
-        state.metadata.pop("search_query", None)
+        if "checkout_link" in state.soft_context:
+            del state.soft_context["checkout_link"]
+        if "search_query" in state.soft_context:
+            del state.soft_context["search_query"]
         state.selected_products = []
         state.available_variants = []
 
@@ -65,20 +67,19 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
         if not order:
             state.last_action_success = False
-            state.metadata["order_error"] = "order_not_found"
+            state.soft_context["order_error"] = "order_not_found"
             state.tracking_url = None
-            state.metadata.pop("tracking_number", None)
+            if "tracking_number" in state.soft_context:
+                del state.soft_context["tracking_number"]
             state.bump_frustration()
             state.last_action = "get_order"
             return state
 
         # Success!
         state.last_action_success = True
-        state.metadata.pop("order_error", None)
-        
         # Store internal Shopify ID for technical reference, but keep state.order_id as customer facing number
         if order.get("id"):
-            state.metadata["shopify_order_id"] = str(order.get("id"))
+            state.soft_context["shopify_order_id"] = str(order.get("id"))
             
         # Ensure state.order_id is the customer facing number (ex: 1001)
         # This is critical for UX consistency.
@@ -95,17 +96,17 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         
         state.tracking_url = tracking_url
         if tracking_number:
-            state.metadata["tracking_number"] = tracking_number
+            state.soft_context["tracking_number"] = tracking_number
         
         if order.get("email"):
             state.customer_email = order.get("email")
 
-        state.metadata["order_status"] = order.get("financial_status")
-        state.metadata["fulfillment_status"] = order.get("fulfillment_status")
-        state.metadata["order_items"] = _extract_items(order)
-        state.metadata["order_created_at"] = order.get("created_at")
+        state.soft_context["order_status"] = order.get("financial_status")
+        state.soft_context["fulfillment_status"] = order.get("fulfillment_status")
+        state.soft_context["order_items"] = _extract_items(order)
+        state.soft_context["order_created_at"] = order.get("created_at")
         if order.get("order_number") is not None:
-            state.metadata["order_number"] = str(order.get("order_number"))
+            state.soft_context["order_number"] = str(order.get("order_number"))
 
         state.last_action_success = True
         state.last_action = "get_order"
@@ -114,8 +115,10 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
     except Exception as exc:
         state.last_action_success = False
         state.last_action = "get_order"
-        state.metadata["order_error"] = str(exc)
+        state.soft_context["order_error"] = str(exc)
+        state.system_error = str(exc)
         state.tracking_url = None
-        state.metadata.pop("tracking_number", None)
+        if "tracking_number" in state.soft_context:
+            del state.soft_context["tracking_number"]
         state.bump_frustration()
         return state

@@ -28,7 +28,7 @@ def _run_message(state, tenant, message):
     state.intent = decision.intent
     state.domain = decision.domain
     if decision.entities:
-        state.metadata["entities"] = decision.entities
+        state.soft_context["entities"] = decision.entities
         apply_entities_to_state(state, decision.entities)
     state.sentiment_level = decision.sentiment_level
     state.sentiment_score = decision.sentiment_score
@@ -54,7 +54,7 @@ def test_checkout_retry_dialog():
 
     state = _run_message(state, tenant, "oi")
     state = _run_message(state, tenant, "vi esse produto https://example.com/products/colar")
-    assert state.selected_variant_id is not None
+    assert state.soft_context.get("selected_variant_id") is not None
 
     state = _run_message(state, tenant, "quero comprar")
     assert state.last_strategy == "permalink"
