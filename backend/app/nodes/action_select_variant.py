@@ -146,11 +146,11 @@ def action_select_variant(
     try:
         if not state.available_variants:
             state.last_action_success = False
-            state.metadata["select_variant_error"] = "no_available_variants"
+            state.soft_context["select_variant_error"] = "no_available_variants"
             # Se não tem variantes mas tem produto, talvez seja produto simples
             if state.selected_products and len(state.selected_products) == 1:
                  # Auto-recover: treat likely single product as selected
-                 state.selected_variant_id = "default" 
+                 state.soft_context["selected_variant_id"] = "default" 
                  state.last_action_success = True
                  state.next_step = "respond"
                  return state
@@ -184,7 +184,7 @@ def action_select_variant(
 
         if not variant:
             state.last_action_success = False
-            state.metadata["select_variant_error"] = "variant_not_found"
+            state.soft_context["select_variant_error"] = "variant_not_found"
             state.bump_frustration()
             state.next_step = "respond"
             return state
@@ -200,24 +200,29 @@ def action_select_variant(
             
         if not is_available:
             state.last_action_success = False
-            state.metadata["out_of_stock"] = True
-            state.metadata["select_variant_error"] = "out_of_stock"
-            state.metadata["unavailable_variant_title"] = variant.get("title")
+            state.soft_context["out_of_stock"] = True
+            state.soft_context["select_variant_error"] = "out_of_stock"
+            state.soft_context["unavailable_variant_title"] = variant.get("title")
             state.bump_frustration()
             state.next_step = "respond"
             return state
 
         # Success!
-        state.selected_variant_id = str(variant.get("id"))
-        state.metadata["selected_variant_title"] = variant.get("title", "")
-        state.metadata["selected_variant_price"] = variant.get("price", "")
-        state.metadata.pop("out_of_stock", None)
-        state.metadata.pop("select_variant_error", None) # Clear any previous error
+        state.soft_context["selected_variant_id"] = str(variant.get("id"))
+        state.soft_context["selected_variant_title"] = variant.get("title", "")
+        state.soft_context["selected_variant_price"] = variant.get("price", "")
+        
+        if "out_of_stock" in state.soft_context:
+            del state.soft_context["out_of_stock"]
+        if "select_variant_error" in state.soft_context:
+            del state.soft_context["select_variant_error"]
+
         state.last_action_success = True
 
     except Exception as exc:
         state.last_action_success = False
-        state.metadata["select_variant_error"] = str(exc)
+        state.system_error = str(exc)
+        state.soft_context["select_variant_error"] = str(exc)
         state.bump_frustration()
 
     state.next_step = "respond"

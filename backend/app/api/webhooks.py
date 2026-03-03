@@ -28,8 +28,22 @@ from app.adapters.evolution_adapter import EvolutionAdapter
 from app.adapters.whatsapp_base import WhatsAppAdapterBase
 from app.core.tenancy import TenantRegistry
 from app.sync.sync_service import SyncService
-from app.core.message_buffer import message_buffer
-from app.core.session_store import get_session, save_session
+import os
+from app.core.message_buffer import AsyncMessageBuffer
+from app.core.message_buffer_redis import RedisMessageBuffer
+
+# Seleção automática baseada na disponibilidade do Redis
+_redis_url = os.getenv('REDIS_URL')
+if _redis_url:
+    message_buffer = RedisMessageBuffer(
+        redis_url=_redis_url,
+        debounce_seconds=2.5
+    )
+else:
+    # Fallback para o buffer em memória (desenvolvimento local)
+    message_buffer = AsyncMessageBuffer(debounce_seconds=2.5)
+    
+from app.core.session_store_v2 import get_session, save_session
 from app.core.state import ConversationState
 # Assumed location based on grep search
 from app.graphs.main_graph import run_main_graph
@@ -42,6 +56,8 @@ from app.core.database import get_or_create_conversation, save_message, get_supa
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
 
 # Simple in-memory rate limiter
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
@@ -150,9 +166,10 @@ async def _bg_persist_message(tenant_id: str, session_id: str, message: Any, cre
     """
     try:
         # Blocking I/O - Get Conversation
+        # Use tenant UUID (not slug) because conversations.tenant_id is UUID type
         conversation = await asyncio.to_thread(
             get_or_create_conversation,
-            tenant_id=tenant_id,
+            tenant_id=tenant_id,  # This is already the UUID from whatsapp_webhook
             session_id=session_id,
             channel="whatsapp",
             number=message.from_number
@@ -208,6 +225,55 @@ def _get_whatsapp_adapter(tenant) -> WhatsAppAdapterBase | None:
     return None
 
 
+def _split_message(text: str) -> list[str]:
+    """
+    Split a message into natural conversation chunks for WhatsApp.
+    
+    Always splits on paragraph boundaries (double newline) to simulate
+    a human sending multiple messages. Bullet lists stay with their intro.
+    Very short adjacent paragraphs get merged to avoid spammy single-word messages.
+    """
+    if not text:
+        return []
+    
+    text = text.strip()
+    
+    # Split by paragraph breaks
+    paragraphs = re.split(r'\n\n+', text)
+    paragraphs = [p.strip() for p in paragraphs if p.strip()]
+    
+    # Single paragraph or no breaks — send as-is
+    if len(paragraphs) <= 1:
+        return [text]
+    
+    # Group: attach bullet lists to their preceding intro line
+    chunks: list[str] = []
+    current_chunk = ""
+    
+    for para in paragraphs:
+        # Check if this paragraph starts with bullet points
+        is_bullet = bool(re.match(r'^[\-•\*\d]', para))
+        
+        if not current_chunk:
+            current_chunk = para
+        elif is_bullet and current_chunk and not re.match(r'^[\-•\*\d]', current_chunk.split('\n')[-1]):
+            # Bullet list right after a non-bullet intro → keep together
+            current_chunk += "\n\n" + para
+        elif len(current_chunk) < 60 and len(para) < 60:
+            # Both very short → merge to avoid spammy tiny messages
+            current_chunk += "\n\n" + para
+        else:
+            # Different paragraphs → separate messages
+            chunks.append(current_chunk)
+            current_chunk = para
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    # Final safety: never return empty chunks
+    return [c.strip() for c in chunks if c.strip()]
+
+
 async def process_consolidated_message(
     text: str, 
     tenant_id: str, 
@@ -228,9 +294,11 @@ async def process_consolidated_message(
 
         # Check for Handoff/Paused status
         # If status is "handoff" or "human_active", the agent must NOT respond.
+        # Use tenant.uuid because conversations.tenant_id is UUID type
+        tenant_uuid = tenant.uuid or tenant.tenant_id
         conversation_data = await asyncio.to_thread(
             get_or_create_conversation,
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             session_id=session_id
         )
         
@@ -277,15 +345,15 @@ async def process_consolidated_message(
                 logger.info(f"🎯 Detected user confirmation: '{text}' → marking as continuation")
                 
                 # Add flags for Router
-                state.metadata['user_confirmed_previous_offer'] = True
-                state.metadata['confirmation_text'] = text
-                state.metadata['is_simple_confirmation'] = True
+                state.soft_context['user_confirmed_previous_offer'] = True
+                state.soft_context['confirmation_text'] = text
+                state.soft_context['is_simple_confirmation'] = True
                 
                 # Maintain current domain/intent
                 if state.domain:
-                    state.metadata['keep_current_domain'] = True
+                    state.soft_context['keep_current_domain'] = True
                 if state.intent and state.intent != 'general':
-                    state.metadata['keep_current_intent'] = True
+                    state.soft_context['keep_current_intent'] = True
         
         # Prepare context for Router
         context = {
@@ -293,7 +361,7 @@ async def process_consolidated_message(
             "session_id": state.session_id,
             "last_domain": state.domain,
             "last_intent": state.intent,
-            "has_variant_id": bool(state.selected_variant_id),
+            "has_variant_id": bool(state.soft_context.get("selected_variant_id")),
             "has_order_id": bool(state.order_id),
             "has_selected_products": bool(state.selected_products),
             "selected_products_count": len(state.selected_products) if state.selected_products else 0,
@@ -310,11 +378,17 @@ async def process_consolidated_message(
         # This was missing! Without this, the agent never updated intent/domain based on new input.
         decision = classify(text, context=context, use_llm=True)
         
+        logger.info(
+            f"[ROUTER] domain={decision.domain}, intent={decision.intent}, "
+            f"entities={decision.entities}, confidence={decision.confidence:.2f}, "
+            f"reason={decision.reason}"
+        )
+        
         # Apply decision to state
         state.set_intent(decision.intent)
         
         # Only switch domain if not forcing current one (e.g. simple confirmation)
-        if not state.metadata.get('keep_current_domain'):
+        if not state.soft_context.get('keep_current_domain'):
             state.domain = decision.domain
         
         apply_entities_to_state(state, decision.entities)
@@ -330,6 +404,12 @@ async def process_consolidated_message(
 
         if decision.sentiment_level != "calm" or _has_frustration(text):
             state.bump_frustration()
+<<<<<<< HEAD
+<<<<<<< Updated upstream
+            # If high frustration, force handoff potentially? (Handled by graph policies usually)
+=======
+=======
+>>>>>>> origin/main
             
         # Stop Agent if Handoff is required
         if state.needs_handoff or state.frustration_level >= 3:
@@ -348,7 +428,11 @@ async def process_consolidated_message(
                 
                 conversation = await asyncio.to_thread(
                     get_or_create_conversation,
+<<<<<<< HEAD
+                    tenant_id=tenant_uuid,
+=======
                     tenant_id=tenant_id,
+>>>>>>> origin/main
                     session_id=session_id,
                     channel="whatsapp",
                     number=from_number
@@ -375,6 +459,18 @@ async def process_consolidated_message(
                 logger.error(f"[ERR] Failed to persist handoff state: {e}")
             
             return
+<<<<<<< HEAD
+>>>>>>> Stashed changes
+
+        # Extrair telefone do cliente
+        if from_number:
+            raw_phone = from_number.split("@")[0]  # remove @s.whatsapp.net se houver
+            clean_phone = "".join(c for c in raw_phone if c.isdigit())
+            if clean_phone:
+                state.customer_phone = clean_phone
+                state.metadata["customer_phone_raw"] = clean_phone
+=======
+>>>>>>> origin/main
 
         # Process with AI agent/graph
         result_state = await asyncio.to_thread(run_main_graph, state, tenant)
@@ -385,21 +481,42 @@ async def process_consolidated_message(
             # Record sent message for anti-loop
             _record_sent_message(response_text)
             
-            # Note: run_main_graph likely adds to history, but we ensure it here if needed
-            # result_state.add_to_history("assistant", response_text) 
             save_session(tenant.tenant_id, session_id, result_state)
             
             await adapter.mark_as_read(message_id)
             
-            send_result = await adapter.send_text_message(
-                to=from_number,
-                text=response_text,
-            )
+            # Split into multiple messages for natural conversation feel
+            chunks = _split_message(response_text)
             
+<<<<<<< HEAD
+<<<<<<< Updated upstream
+            for i, chunk in enumerate(chunks):
+                send_result = await adapter.send_text_message(
+                    to=from_number,
+                    text=chunk,
+=======
+=======
+>>>>>>> origin/main
             # Persist AGENT message to database
             try:
                 # Retrieve conversation ID
                 conversation = get_or_create_conversation(
+<<<<<<< HEAD
+                    tenant_id=tenant_uuid,
+                    session_id=session_id,
+                    channel="whatsapp"
+>>>>>>> Stashed changes
+                )
+                
+                if not send_result.success:
+                    logger.error(f"Failed to send WhatsApp chunk {i+1}/{len(chunks)}: {send_result.error}")
+                    break
+                
+                # Human-like delay between messages (skip after last)
+                if i < len(chunks) - 1:
+                    delay = min(1.0 + len(chunk) / 200, 2.5)  # 1.0s–2.5s based on length
+                    await asyncio.sleep(delay)
+=======
                     tenant_id=tenant.tenant_id,
                     session_id=session_id,
                     channel="whatsapp"
@@ -420,6 +537,7 @@ async def process_consolidated_message(
             
             if not send_result.success:
                 logger.error(f"Failed to send WhatsApp response: {send_result.error}")
+>>>>>>> origin/main
         else:
             save_session(tenant.tenant_id, session_id, result_state)
             
@@ -571,9 +689,29 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     
     # Get tenant config (Async)
     try:
-        registry = TenantRegistry()
-        tenant = await registry.get_async(tenant_id, use_cache=True)
+        if tenant_id == "demo":
+            # Mock demo tenant for local debugging
+            from app.core.tenancy import TenantConfig
+            tenant = TenantConfig(
+                tenant_id="demo",
+                name="Demo Store",
+                whatsapp_provider="evolution",
+                whatsapp_instance_url="https://nouvaris-evolution-api.ojdb99.easypanel.host",
+                whatsapp_api_key="3507B4BFABD9-4F3B-B87E-E441338CF369",
+                whatsapp_instance_name="nouvaris",
+                active=True
+            )
+        else:
+            registry = TenantRegistry()
+            tenant = await registry.get_async(tenant_id, use_cache=True)
     except ValueError:
+<<<<<<< HEAD
+<<<<<<< Updated upstream
+        logger.error(f"❌ Tenant not found in registry: {tenant_id}")
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+=======
+=======
+>>>>>>> origin/main
         # FAILSAFE: Always use Mock/Demo tenant for testing locally
         # This redirects ANY incoming webhook to the seeded "Demo Store" so it shows up in the panel
         logger.warning(f"⚠️ Tenant '{tenant_id}' not found. Redirecting to DEMO tenant.")
@@ -581,11 +719,20 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
         # FORCE tenant_id to the one we seeded in the DB
         # This ensures persistence works (FK checks) and Realtime triggers for the Demo dashboard
         original_tenant_id = tenant_id
+<<<<<<< HEAD
+        tenant_id = "c35fe360-dc69-4997-9d1f-ae57f4d8a135"
+        
+        from app.core.tenancy import TenantConfig
+        tenant = TenantConfig(
+            tenant_id="demo",
+            uuid=tenant_id,
+=======
         tenant_id = "73ee1a5c-1160-4a51-ba34-3fdddcd49f9e"
         
         from app.core.tenancy import TenantConfig
         tenant = TenantConfig(
             tenant_id=tenant_id,
+>>>>>>> origin/main
             name="Demo Store",
             active=True,
             whatsapp_provider="evolution",
@@ -593,6 +740,10 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             whatsapp_instance_url="http://localhost:8080",
             whatsapp_api_key="mock_key"
         )
+<<<<<<< HEAD
+>>>>>>> Stashed changes
+=======
+>>>>>>> origin/main
     
     # Get WhatsApp adapter
     adapter = _get_whatsapp_adapter(tenant)
@@ -627,6 +778,12 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     raw_id = adapter.get_session_id() or message.from_number
     session_id = "".join(filter(str.isdigit, str(raw_id)))
     
+<<<<<<< HEAD
+<<<<<<< Updated upstream
+    # Buffer message
+=======
+=======
+>>>>>>> origin/main
 
     
     logger.info(f"[WH] received tenant={tenant_id[:8]}... from={session_id}")
@@ -645,15 +802,23 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             pass
 
     asyncio.create_task(
+<<<<<<< HEAD
+        _bg_persist_message(tenant.uuid or tenant.tenant_id, session_id, message, created_at_iso)
+    )
+    
+    # Buffer message for AI processing
+>>>>>>> Stashed changes
+=======
         _bg_persist_message(tenant_id, session_id, message, created_at_iso)
     )
     
     # Buffer message for AI processing
+>>>>>>> origin/main
     await message_buffer.add_message(
         session_id,
         message.text,
         process_consolidated_message,
-        tenant_id,
+        tenant.uuid or tenant.tenant_id,
         message.from_number,
         message.message_id,
         session_id
@@ -664,6 +829,13 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
         "event": "message_buffered", 
         "status": "processing_async"
     }
+
+
+# --- Catch-All: Silently ignore all other Evolution API event sub-routes ---
+@router.post("/whatsapp/{tenant_id}/{event_type}", status_code=status.HTTP_200_OK, include_in_schema=False)
+async def whatsapp_ignore_event(tenant_id: str, event_type: str):
+    """Silently ignore non-message events (presence-update, messages-update, send-message, etc.)."""
+    return {"success": True, "event": "ignored", "type": event_type}
 
 
 @router.get("/health", summary="Health check for webhook service")

@@ -37,9 +37,10 @@ def action_resolve_product(
     )
     
     # Usar product_url da entidade extraída pelo router, não a mensagem inteira
-    product_url = state.metadata.get("product_url") or ""
+    product_url = state.soft_context.get("product_url") or ""
     
     # Fallback: tentar extrair URL da mensagem se não estiver no metadata
+
     if not product_url:
         import re
         url_match = re.search(r"https?://\S+", state.last_user_message or "")
@@ -48,39 +49,42 @@ def action_resolve_product(
     
     if not product_url:
         state.last_action_success = False
-        state.metadata["product_error"] = "missing_product_url"
+        state.soft_context["product_error"] = "missing_product_url"
         state.next_step = "respond"
         return state
     
     try:
         product = client.get_product_by_url(product_url)
-        state.selected_product_id = product["product_id"]
-        state.selected_variant_id = product["variant_id"]
-        state.metadata["product_title"] = product["title"]
-        state.metadata["product_price"] = product["price"]
-        state.metadata["product_description"] = product.get("description") or ""
-        state.metadata["product_tags"] = product.get("tags") or ""
-        state.metadata["product_type"] = product.get("product_type") or ""
-        state.metadata["product_vendor"] = product.get("vendor") or ""
+        state.soft_context["focused_product_id"] = product["product_id"]
+        state.soft_context["selected_variant_id"] = product["variant_id"]
+        state.soft_context["product_title"] = product["title"]
+        state.soft_context["product_price"] = product["price"]
+        state.soft_context["product_description"] = product.get("description") or ""
+        state.soft_context["product_tags"] = product.get("tags") or ""
+        state.soft_context["product_type"] = product.get("product_type") or ""
+        state.soft_context["product_vendor"] = product.get("vendor") or ""
         state.last_action_success = True
     except requests.Timeout:
         state.last_action_success = False
-        state.metadata["product_error"] = "timeout"
+        state.system_error = "timeout"
+        state.soft_context["product_error"] = "timeout"
         state.bump_frustration()
     except requests.HTTPError as e:
         state.last_action_success = False
         if e.response.status_code == 404:
-            state.metadata["product_error"] = "not_found"
+            state.soft_context["product_error"] = "not_found"
         elif e.response.status_code == 429:
-            state.metadata["product_error"] = "rate_limit"
+            state.soft_context["product_error"] = "rate_limit"
         else:
-            state.metadata["product_error"] = str(e)
+            state.soft_context["product_error"] = str(e)
+            state.system_error = str(e)
         state.bump_frustration()
     except Exception as e:
         state.last_action_success = False
-        state.metadata["product_error"] = str(e)
-        state.selected_product_id = None
-        state.selected_variant_id = None
+        state.system_error = str(e)
+        state.soft_context["product_error"] = str(e)
+        state.soft_context["focused_product_id"] = None
+        state.soft_context["selected_variant_id"] = None
         state.bump_frustration()
     
     state.last_action = "resolve_product"

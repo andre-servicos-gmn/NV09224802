@@ -7,49 +7,35 @@ from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
 
-REFUND_INTENT_ANALYSIS_PROMPT = """Analise se o usuário está SOLICITANDO um reembolso/cancelamento ou apenas PERGUNTANDO sobre a política.
+REFUND_INTENT_ANALYSIS_PROMPT = """Atue como um Analista de Risco e Retenção.
+Determine se o objetivo do usuário é INFORMATIVO (Dúvida) ou TRANSACIONAL (Ação de Reembolso/Cancelamento).
 
-## MENSAGEM DO USUÁRIO
-"{message}"
+## INPUT
+Mensagem: "{message}"
+Contexto Prévio: {context}
 
-## CONTEXTO (se disponível)
-{context}
+## MATRIZ DE DECISÃO
 
----
+1. **SOLICITAÇÃO REAL (is_request: true)**
+   - O usuário quer reverter uma transação.
+   - Sinais: Imperativos ("Quero devolver"), Ultimatos ("Não vou pagar"), Frustração extrema ligada a um pedido específico.
+   - *Nuance:* "Chegou quebrado" -> Implica solicitação de troca/devolução, mesmo sem a palavra "reembolso".
 
-## CRITÉRIOS
+2. **DÚVIDA / POLÍTICA (is_request: false)**
+   - O usuário está sondando o terreno ou inseguro antes de comprar.
+   - Sinais: Condicionais ("Se não servir, posso trocar?"), Perguntas de prazo ("Quanto tempo tenho?").
 
-SOLICITAÇÃO (return TRUE):
-- "quero meu dinheiro de volta"
-- "cancela meu pedido"
-- "quero reembolso do pedido #12345"
-- "devolve meu dinheiro"
-- Usuário já tem um pedido e quer cancelar/reembolsar
+3. **AMBIGUIDADE CRÍTICA**
+   - Se o usuário diz apenas "reembolso", olhe o histórico. Se ele acabou de reclamar de um defeito = REQUEST. Se está escolhendo produto = QUESTION.
 
-PERGUNTA (return FALSE):
-- "como funciona o reembolso?"
-- "qual a política de devolução?"
-- "em quanto tempo cai o reembolso?"
-- "posso pedir reembolso depois de quanto tempo?"
-- Usuário está se informando sobre o processo
-
-## CASOS AMBÍGUOS
-Se não tem certeza, considere:
-- Usuário mencionou número de pedido? → Provavelmente SOLICITAÇÃO
-- Usa verbos no imperativo? ("cancela", "devolve") → SOLICITAÇÃO
-- Usa verbos no condicional/interrogativo? ("posso", "como") → PERGUNTA
-
----
-
-## SUA TAREFA
-Retorne JSON válido:
+## OUTPUT JSON
 {{
   "is_request": true/false,
   "confidence": 0.0-1.0,
-  "reasoning": "breve explicação"
+  "intent_category": "return_request | cancellation | policy_inquiry | complaint_only",
+  "risk_level": "low (curioso) | medium (insatisfeito) | high (churn iminente)",
+  "reasoning": "Uma frase explicando sua dedução."
 }}
-
-Sua resposta (apenas JSON):
 """
 
 def analyze_refund_intent(message: str, context: dict | None = None) -> dict:

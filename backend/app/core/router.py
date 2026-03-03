@@ -83,6 +83,8 @@ def classify_domain_heuristic(intent: str) -> str:
         INTENT_SELECT_VARIANT,
         INTENT_ADD_TO_CART,
         INTENT_VIEW_CART,
+        INTENT_GREETING,
+        INTENT_GENERAL,
     }
     support = {
         INTENT_ORDER_STATUS,
@@ -208,8 +210,9 @@ def apply_entities_to_state(state, entities: dict) -> None:
             # Clear stale tracking data from previous order
             state.tracking_url = None
             state.tracking_last_update_days = None
-            state.metadata.pop("order_status", None)
-            state.ticket_opened = False
+            if "order_status" in state.soft_context:
+                del state.soft_context["order_status"]
+            state.soft_context["ticket_opened"] = False
         state.order_id = new_order_id
     
     new_email = entities.get("email")
@@ -217,14 +220,14 @@ def apply_entities_to_state(state, entities: dict) -> None:
         # ALWAYS overwrite email when user provides a new one
         state.customer_email = new_email
     
-    if entities.get("product_url") and not state.metadata.get("product_url"):
-        state.metadata["product_url"] = entities.get("product_url")
+    if entities.get("product_url") and not state.soft_context.get("product_url"):
+        state.soft_context["product_url"] = entities.get("product_url")
 
     # [NEW] Map extracted search query to state
     if entities.get("search_query"):
         state.search_query = entities["search_query"]
     
-    state.metadata["entities"] = entities
+    state.soft_context["entities"] = entities
 
 
 def classify(message: str, context: dict | None = None, use_llm: bool = True) -> RouterDecision:
@@ -269,6 +272,17 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
             ):
                 raise ValueError("LLM sanity check failed.")
             entities = _merge_entities(result.entities, extract_entities_heuristic(message))
+            
+            # Safety net: ensure domain matches intent
+            # The LLM might classify intent as "order_status" but domain as "store_qa"
+            expected_domain = classify_domain_heuristic(result.intent)
+            if expected_domain != result.domain and result.intent != INTENT_GENERAL and result.intent != INTENT_GREETING:
+                import logging
+                logging.getLogger(__name__).info(
+                    f"[ROUTER] Domain override: LLM said {result.domain} but intent {result.intent} → {expected_domain}"
+                )
+                result.domain = expected_domain
+            
             decision = RouterDecision(
                 domain=result.domain,
                 intent=result.intent,

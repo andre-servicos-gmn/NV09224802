@@ -88,30 +88,30 @@ def _build_user_prompt(state: ConversationState, knowledge_context: str) -> str:
     ]
     
     # Add relevant state info
-    if state.selected_product_id:
-        title = state.metadata.get("product_title", "produto selecionado")
+    if state.soft_context.get("selected_product_id"):
+        title = state.soft_context.get("product_title", "produto selecionado")
         lines.append(f"Produto selecionado: {title}")
     
     if state.order_id:
         lines.append(f"Número do pedido: {state.order_id}")
         if state.tracking_url:
             lines.append(f"Link de rastreio: {state.tracking_url}")
-        status = state.metadata.get("order_status")
+        status = state.soft_context.get("order_status")
         if status:
             lines.append(f"Status do pedido: {status}")
     
-    checkout_link = state.metadata.get("checkout_link")
+    checkout_link = state.checkout_link
     if checkout_link:
         lines.append(f"Link de checkout gerado: {checkout_link}")
     
-    faq_answer = state.metadata.get("faq_answer")
+    faq_answer = state.soft_context.get("faq_answer")
     if faq_answer:
         lines.append(f"Resposta da FAQ encontrada: {faq_answer}")
     
     if state.frustration_level >= 2:
         lines.append(f"ATENÇÃO: Cliente parece frustrado (nível {state.frustration_level})")
     
-    if state.ticket_opened:
+    if state.soft_context.get("ticket_opened"):
         lines.append("Um ticket de suporte foi aberto para este caso.")
     
     # Add knowledge context
@@ -160,7 +160,7 @@ def generate_llm_response(
         response = (result.content or "").strip()
         
         # Ensure checkout link is included if present
-        checkout_link = state.metadata.get("checkout_link")
+        checkout_link = state.checkout_link
         if checkout_link and checkout_link not in response:
             response = f"{response}\n\n{checkout_link}"
         
@@ -178,7 +178,7 @@ def _get_fallback_response(state: ConversationState, domain: str) -> str:
         return "Oi! Como posso ajudar?"
     
     if domain == "sales":
-        checkout_link = state.metadata.get("checkout_link")
+        checkout_link = state.checkout_link
         if checkout_link:
             return f"Pronto! Aqui está o link para finalizar:\n{checkout_link}"
         return "Me manda o link do produto ou o nome pra eu ajudar."
@@ -191,7 +191,7 @@ def _get_fallback_response(state: ConversationState, domain: str) -> str:
         return "Me passa o número do pedido para eu verificar."
     
     if domain == "store_qa":
-        faq = state.metadata.get("faq_answer")
+        faq = state.soft_context.get("faq_answer")
         if faq:
             return faq
         return "Posso ajudar com dúvidas sobre frete, pagamento ou trocas."

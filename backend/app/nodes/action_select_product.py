@@ -44,7 +44,7 @@ def action_select_product(
     try:
         if not state.selected_products:
             state.last_action_success = False
-            state.metadata["select_product_error"] = "no_selected_products"
+            state.soft_context["select_product_error"] = "no_selected_products"
             state.bump_frustration()
             state.next_step = "respond"
             state.last_action = "select_product"
@@ -54,7 +54,7 @@ def action_select_product(
         selection = _extract_selection(message)
         if selection is None:
             state.last_action_success = False
-            state.metadata["select_product_error"] = "no_selection"
+            state.soft_context["select_product_error"] = "no_selection"
             state.bump_frustration()
             state.next_step = "respond"
             state.last_action = "select_product"
@@ -63,7 +63,7 @@ def action_select_product(
         index = selection - 1
         if index < 0 or index >= len(state.selected_products):
             state.last_action_success = False
-            state.metadata["select_product_error"] = "selection_out_of_range"
+            state.soft_context["select_product_error"] = "selection_out_of_range"
             state.bump_frustration()
             state.next_step = "respond"
             state.last_action = "select_product"
@@ -73,49 +73,54 @@ def action_select_product(
         product_id = str(product.get("product_id"))
 
         variants = client.get_product_variants(product_id)
-        state.selected_product_id = product_id
+        state.soft_context["focused_product_id"] = product_id
         state.available_variants = variants
-        state.metadata["product_title"] = product.get("title", "")
-        state.metadata["product_price"] = product.get("price", "")
-        state.metadata.pop("out_of_stock", None)
+        state.soft_context["product_title"] = product.get("title", "")
+        state.soft_context["product_price"] = product.get("price", "")
+        if "out_of_stock" in state.soft_context:
+            del state.soft_context["out_of_stock"]
 
         if len(variants) <= 1:
             if variants:
                 variant = variants[0]
-                state.selected_variant_id = variant.get("variant_id")
-                state.metadata["selected_variant_title"] = variant.get("title", "")
-                state.metadata["selected_variant_price"] = variant.get("price", "")
+                state.soft_context["selected_variant_id"] = variant.get("variant_id")
+                state.soft_context["selected_variant_title"] = variant.get("title", "")
+                state.soft_context["selected_variant_price"] = variant.get("price", "")
             state.available_variants = []
         else:
-            state.selected_variant_id = None
+            state.soft_context["selected_variant_id"] = None
 
         state.last_action_success = True
 
     except requests.Timeout:
         state.last_action_success = False
-        state.metadata["select_product_error"] = "timeout"
+        state.system_error = "timeout"
+        state.soft_context["select_product_error"] = "timeout"
         state.available_variants = []
-        state.selected_product_id = None
-        state.selected_variant_id = None
+        state.soft_context["focused_product_id"] = None
+        state.soft_context["selected_variant_id"] = None
         state.bump_frustration()
 
     except requests.HTTPError as exc:
         state.last_action_success = False
         if exc.response.status_code == 429:
-            state.metadata["select_product_error"] = "rate_limit"
+            state.system_error = "rate_limit"
+            state.soft_context["select_product_error"] = "rate_limit"
         else:
-            state.metadata["select_product_error"] = str(exc)
+            state.system_error = str(exc)
+            state.soft_context["select_product_error"] = str(exc)
         state.available_variants = []
-        state.selected_product_id = None
-        state.selected_variant_id = None
+        state.soft_context["focused_product_id"] = None
+        state.soft_context["selected_variant_id"] = None
         state.bump_frustration()
 
     except Exception as exc:
         state.last_action_success = False
-        state.metadata["select_product_error"] = str(exc)
+        state.system_error = str(exc)
+        state.soft_context["select_product_error"] = str(exc)
         state.available_variants = []
-        state.selected_product_id = None
-        state.selected_variant_id = None
+        state.soft_context["focused_product_id"] = None
+        state.soft_context["selected_variant_id"] = None
         state.bump_frustration()
 
     state.last_action = "select_product"
