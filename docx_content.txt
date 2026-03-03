@@ -1,0 +1,648 @@
+NOUVARIS
+Plano de Implementação
+Persistência de Sessão com Redis + Supabase
+Resolução definitiva das inconsistências do agente de atendimento
+Versão 1.0  ·  Junho 2025
+Item
+Detalhe
+Problema raiz
+session_store.py usa dict Python em memória RAM — apagado a cada reinício ou entre workers
+Arquivo afetado principal
+backend/app/core/session_store.py
+Arquivo afetado secundário
+backend/app/core/message_buffer.py (mesmo problema)
+Impacto estimado
+40–80% das conversas com +3 msgs perdendo contexto em algum momento
+Solução adotada
+Redis (Layer 1, velocidade) + Supabase (Layer 2, durabilidade)
+Fases de entrega
+3 fases — Quick Fix → Redis completo → Message Buffer
+1. Contexto do Problema
+O agente de atendimento do Nouvaris opera via WhatsApp usando a Evolution API. Cada mensagem chega como um webhook independente — o sistema precisa reconstitruir o contexto de toda a conversa a cada nova mensagem. O módulo responsável por guardar esse contexto entre mensagens é o session_store.py, que atualmente usa um simples dicionário Python em RAM.
+1.1 O Código Problemático
+# backend/app/core/session_store.py
+# Armazenamento de sessões em memória
+# Chave: '{tenant_id}:{session_id}'
+_session_store: dict[str, dict] = {}
+SESSION_TTL_SECONDS = 30 * 60
+# NOTA DO DESENVOLVEDOR:
+# 'In production, this should be replaced with Redis
+# or database-backed storage.'
+⚠️ ATENÇÃO:  O próprio desenvolvedor deixou um aviso no código. Esse mecanismo foi projetado apenas para desenvolvimento local e nunca deveria ter chegado à produção.
+1.2 Os Três Cenários de Falha
+Cenário
+Causa
+Frequência
+Sintoma
+A — Reinício do servidor
+Deploy, crash, atualização do código
+Alta — todo deploy afeta sessões ativas
+Agente esquece produto/dados no meio da conversa
+B — Múltiplos workers
+Mensagem vai para worker diferente do anterior
+Contínua — 75% das msgs em 4 workers
+Cliente precisa repetir informações a cada mensagem
+C — Escala horizontal
+Dois servidores físicos sem RAM compartilhada
+100% de falha se houver escala
+Impossível manter qualquer contexto
+1.3 Módulo Secundário Também Afetado
+message_buffer.py também usa memória RAM exclusiva de cada worker:
+# backend/app/core/message_buffer.py
+class AsyncMessageBuffer:
+    """Buffers incoming messages for a short window..."""
+    def __init__(self, debounce_seconds: float = 2.5):
+        self._buffers: dict[str, list[str]] = {}   # ← RAM pura
+        self._tasks: dict[str, asyncio.Task] = {}  # ← RAM pura
+        self._lock = asyncio.Lock()
+Com múltiplos workers, mensagens rápidas enviadas pelo usuário (ex: "quero" e "tamanho M" em sequência) podem cair em workers diferentes e nunca serem consolidadas, gerando dupla resposta ou perda de uma das mensagens.
+2. Arquitetura da Solução
+2.1 Diagrama de Fluxo
+NOVA ARQUITETURA DE SESSÃO
+WhatsApp → Webhook → [Worker 1 | Worker 2 | Worker N]
+                                    ↓
+              RedisSessionStore (get_session / save_session)
+                  ↙ hit (<1ms)           ↘ miss
+         Redis (Layer 1)          Supabase (Layer 2)
+         TTL: 30 min               Tabela: conversations
+WRITE: grava nos dois simultaneamente (write-through)
+2.2 Comportamento por Operação
+Operação
+Fluxo
+Latência esperada
+save_session()
+Grava no Redis E no Supabase simultaneamente (write-through)
+< 5ms total
+get_session() — cache hit
+Lê do Redis, retorna imediatamente
+< 1ms
+get_session() — cache miss
+Redis vazio → busca no Supabase → repovoar Redis → retornar
+20–80ms
+Redis indisponível
+Fallback automático para Supabase, sem downtime
+20–80ms
+Servidor reinicia
+Redis persiste (serviço independente), Supabase como backup adicional
+0ms impacto
+Novo worker recebe msg
+Todos os workers acessam o mesmo Redis compartilhado
+< 1ms
+3. Plano de Implementação — 3 Fases
+O plano é dividido em três fases progressivas. Cada fase entrega valor imediato e pode ser implantada de forma independente, sem quebrar funcionalidades existentes.
+Fase
+O que resolve
+Esforço
+Risco
+Fase 1 — Quick Fix Supabase
+Elimina perda de contexto por deploy e múltiplos workers usando Supabase diretamente
+2–4h
+Baixo
+Fase 2 — Redis Completo
+Adiciona Redis na frente do Supabase, resolve latência e consolida a arquitetura
+4–8h
+Baixo
+Fase 3 — Message Buffer
+Centraliza o buffer de mensagens com Redis para consolidação entre workers
+4–6h
+Médio
+FASE
+1
+Quick Fix — Supabase como Backend de Sessão
+Implementar em: 2–4 horas · Sem nova infraestrutura · Deploy imediato
+Objetivo: Substituir o dict Python em RAM por leituras e gravações diretas no Supabase (tabela conversations.state). Resolve os três cenários de falha imediatamente sem precisar configurar Redis.
+✅ POR QUE FUNCIONA:  O chat web já persiste o estado em conversations.state a cada mensagem (veja chat.py). O webhook do WhatsApp é que não faz isso — apenas usa o dict em memória. Alinhar os dois fluxos é suficiente para resolver o problema.
+3.1.1 Arquivo a criar: session_store_v2.py
+Crie o arquivo backend/app/core/session_store_v2.py com o conteúdo abaixo:
+"""
+Session store com persistência no Supabase.
+Fase 1: substitui o dict em RAM por leitura/escrita direta no DB.
+Fase 2: adicionar Redis na frente como cache (sem alterar esta interface).
+"""
+import logging
+import time
+from typing import Optional
+from app.core.state import ConversationState
+from app.core.supabase_client import get_supabase
+logger = logging.getLogger(__name__)
+SESSION_TTL_SECONDS = 30 * 60  # 30 minutos
+def _get_key(tenant_id: str, session_id: str) -> str:
+    return f"{tenant_id}:{session_id}"
+def get_session(tenant_id: str, session_id: str) -> Optional[ConversationState]:
+    """Busca sessão no Supabase (conversations.state)."""
+    try:
+        supabase = get_supabase()
+        result = (
+            supabase.table("conversations")
+            .select("state, updated_at")
+            .eq("tenant_id", tenant_id)
+            .eq("session_id", session_id)
+            .single()
+            .execute()
+        )
+        if not result.data:
+            return None
+        state_dict = result.data.get('state') or {}
+        if not state_dict:
+            return None
+        # Verificar TTL via updated_at
+        updated_at = result.data.get('updated_at')
+        if updated_at:
+            from datetime import datetime, timezone
+            try:
+                dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                age = (datetime.now(timezone.utc) - dt).total_seconds()
+                if age > SESSION_TTL_SECONDS:
+                    logger.debug(f'Session expired for {session_id}')
+                    return None
+            except Exception:
+                pass
+        return ConversationState(**state_dict)
+    except Exception as e:
+        logger.warning(f'get_session failed for {session_id}: {e}')
+        return None
+def save_session(tenant_id: str, session_id: str, state: ConversationState) -> None:
+    """Persiste sessão no Supabase."""
+    try:
+        supabase = get_supabase()
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        supabase.table('conversations').update({
+            'state': state.model_dump(mode='json'),
+            'domain': state.domain,
+            'frustration_level': state.frustration_level,
+            'updated_at': now,
+        }).eq('tenant_id', tenant_id).eq('session_id', session_id).execute()
+    except Exception as e:
+        logger.error(f'save_session failed for {session_id}: {e}')
+def clear_session(tenant_id: str, session_id: str) -> None:
+    """Limpa sessão (mantém conversa, zera state)."""
+    try:
+        supabase = get_supabase()
+        supabase.table('conversations').update({'state': {}}).\
+            eq('tenant_id', tenant_id).eq('session_id', session_id).execute()
+    except Exception as e:
+        logger.warning(f'clear_session failed for {session_id}: {e}')
+def cleanup_expired_sessions() -> int:
+    """No-op nesta fase — TTL é gerenciado via updated_at."""
+    return 0
+3.1.2 Atualizar webhooks.py
+Em backend/app/api/webhooks.py, altere as importações no topo do arquivo:
+# ANTES:
+from app.core.session_store import get_session, save_session
+# DEPOIS:
+from app.core.session_store_v2 import get_session, save_session
+ℹ️ NOTA:  Não é necessário alterar nenhuma outra linha do webhooks.py. A interface (get_session / save_session) é idêntica. A mudança é apenas no import.
+3.1.3 Garantir que a conversa existe antes de salvar
+O save_session faz um UPDATE. Para que funcione, a conversa precisa existir na tabela. Em process_consolidated_message no webhooks.py, a conversa já é criada via get_or_create_conversation. Verifique que essa chamada ocorre ANTES do primeiro save_session:
+# Em process_consolidated_message (webhooks.py)
+# Garanta esta ordem:
+# 1. Cria conversa (já existe no código, mas confirme que está antes do save)
+conversation_data = await asyncio.to_thread(
+    get_or_create_conversation,
+    tenant_id=tenant_id,
+    session_id=session_id,
+    channel='whatsapp',
+    number=from_number
+)
+# 2. Somente depois: get/save session funcionam
+state = get_session(tenant.tenant_id, session_id)
+# ... processar ...
+save_session(tenant.tenant_id, session_id, result_state)
+3.1.4 Validação da Fase 1
+Teste manual (5 minutos):
+☐  Enviar mensagem no WhatsApp e verificar que o agente responde normalmente
+☐  Reiniciar o servidor uvicorn e enviar outra mensagem na mesma conversa
+☐  Verificar no Supabase (conversations.state) que o contexto foi preservado
+☐  Com 2 workers rodando, verificar que o contexto é compartilhado entre eles
+FASE
+2
+Redis Completo — Arquitetura Write-Through
+Implementar após Fase 1 · 4–8 horas · Requer Redis disponível (Railway/Upstash)
+Objetivo: Adicionar Redis como Layer 1 na frente do Supabase. O Supabase vira o backup permanente. A interface pública (get_session / save_session) não muda — apenas a implementação interna evolui.
+3.2.1 Dependência: instalar redis-py
+# Adicionar ao requirements.txt:
+redis[hiredis]>=5.0.0
+# Instalar:
+pip install redis[hiredis]
+3.2.2 Variáveis de ambiente
+Adicionar ao .env e nas configurações de produção (Railway/Render/etc):
+# Redis connection
+REDIS_URL=redis://localhost:6379/0
+# Ou para Railway:
+# REDIS_URL=redis://default:senha@containers-us-west-X.railway.app:XXXXX
+# Ou para Upstash:
+# REDIS_URL=rediss://default:senha@xxxxx.upstash.io:6379
+# TTL da sessão em segundos (padrão: 1800 = 30 min)
+SESSION_TTL_SECONDS=1800
+3.2.3 Arquivo final: session_store_v2.py (com Redis)
+Substitua o conteúdo do session_store_v2.py criado na Fase 1 por esta versão completa:
+"""
+Session store com arquitetura de duas camadas:
+  Layer 1: Redis  (velocidade, <1ms, TTL automático)
+  Layer 2: Supabase (durabilidade, backup permanente)
+Estratégia write-through: grava nos dois simultaneamente.
+Em caso de falha do Redis, opera normalmente apenas via Supabase.
+"""
+import json
+import logging
+import os
+from typing import Optional
+import redis
+from app.core.state import ConversationState
+from app.core.supabase_client import get_supabase
+logger = logging.getLogger(__name__)
+SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '1800'))
+_redis_client: Optional[redis.Redis] = None
+def _get_redis() -> Optional[redis.Redis]:
+    """Retorna cliente Redis (singleton). Retorna None se indisponível."""
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    url = os.getenv('REDIS_URL')
+    if not url:
+        return None
+    try:
+        client = redis.from_url(url, decode_responses=True, socket_timeout=2.0)
+        client.ping()  # Valida conexão
+        _redis_client = client
+        logger.info('Redis conectado com sucesso')
+        return _redis_client
+    except Exception as e:
+        logger.warning(f'Redis indisponível, usando apenas Supabase: {e}')
+        return None
+def _redis_key(tenant_id: str, session_id: str) -> str:
+    return f"session:{tenant_id}:{session_id}"
+# ── REDIS LAYER ─────────────────────────────────────────────────────
+def _redis_get(tenant_id: str, session_id: str) -> Optional[ConversationState]:
+    r = _get_redis()
+    if not r:
+        return None
+    try:
+        data = r.get(_redis_key(tenant_id, session_id))
+        if data:
+            return ConversationState(**json.loads(data))
+        return None
+    except Exception as e:
+        logger.warning(f'Redis get error: {e}')
+        return None
+def _redis_set(tenant_id: str, session_id: str, state: ConversationState) -> None:
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        key = _redis_key(tenant_id, session_id)
+        data = json.dumps(state.model_dump(mode='json'), ensure_ascii=False)
+        r.setex(key, SESSION_TTL_SECONDS, data)
+    except Exception as e:
+        logger.warning(f'Redis set error: {e}')
+def _redis_delete(tenant_id: str, session_id: str) -> None:
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        r.delete(_redis_key(tenant_id, session_id))
+    except Exception as e:
+        logger.warning(f'Redis delete error: {e}')
+# ── SUPABASE LAYER ──────────────────────────────────────────────────
+def _supabase_get(tenant_id: str, session_id: str) -> Optional[ConversationState]:
+    try:
+        supabase = get_supabase()
+        result = (
+            supabase.table('conversations')
+            .select('state, updated_at')
+            .eq('tenant_id', tenant_id)
+            .eq('session_id', session_id)
+            .single()
+            .execute()
+        )
+        if not result.data:
+            return None
+        state_dict = result.data.get('state') or {}
+        if not state_dict:
+            return None
+        return ConversationState(**state_dict)
+    except Exception as e:
+        logger.warning(f'Supabase get error: {e}')
+        return None
+def _supabase_set(tenant_id: str, session_id: str, state: ConversationState) -> None:
+    try:
+        supabase = get_supabase()
+        from datetime import datetime, timezone
+        supabase.table('conversations').update({
+            'state': state.model_dump(mode='json'),
+            'domain': state.domain,
+            'frustration_level': state.frustration_level,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('tenant_id', tenant_id).eq('session_id', session_id).execute()
+    except Exception as e:
+        logger.error(f'Supabase set error: {e}')
+# ── INTERFACE PÚBLICA ───────────────────────────────────────────────
+def get_session(tenant_id: str, session_id: str) -> Optional[ConversationState]:
+    """
+    Busca sessão com fallback automático:
+    1. Tenta Redis (rápido)
+    2. Se miss, busca no Supabase e repovoar Redis
+    """
+    # Layer 1: Redis
+    state = _redis_get(tenant_id, session_id)
+    if state:
+        return state
+    # Layer 2: Supabase (cache miss ou Redis indisponível)
+    state = _supabase_get(tenant_id, session_id)
+    if state:
+        # Repovoar o Redis com o dado do Supabase
+        _redis_set(tenant_id, session_id, state)
+        logger.debug(f'Cache repopulated from Supabase for {session_id}')
+    return state
+def save_session(tenant_id: str, session_id: str, state: ConversationState) -> None:
+    """
+    Persiste sessão nos dois layers (write-through).
+    Redis falha silenciosamente; Supabase é obrigatório.
+    """
+    _redis_set(tenant_id, session_id, state)   # Layer 1 (best-effort)
+    _supabase_set(tenant_id, session_id, state) # Layer 2 (authoritative)
+def clear_session(tenant_id: str, session_id: str) -> None:
+    """Remove sessão de ambos os layers."""
+    _redis_delete(tenant_id, session_id)
+    try:
+        get_supabase().table('conversations').update({'state': {}}).\
+            eq('tenant_id', tenant_id).eq('session_id', session_id).execute()
+    except Exception as e:
+        logger.warning(f'clear_session supabase error: {e}')
+def cleanup_expired_sessions() -> int:
+    """Redis faz TTL automático. Supabase é gerenciado via updated_at."""
+    return 0
+def get_redis_health() -> dict:
+    """Retorna status de saúde do Redis para monitoramento."""
+    r = _get_redis()
+    if not r:
+        return {'connected': False, 'reason': 'REDIS_URL not set or connection failed'}
+    try:
+        info = r.info('server')
+        return {
+            'connected': True,
+            'version': info.get('redis_version'),
+            'uptime_days': info.get('uptime_in_days'),
+        }
+    except Exception as e:
+        return {'connected': False, 'reason': str(e)}
+3.2.4 Endpoint de health check (opcional mas recomendado)
+Adicionar em backend/app/api/main.py:
+from app.core.session_store_v2 import get_redis_health
+@app.get('/health/redis')
+async def redis_health():
+    """Health check para Redis — útil para monitorar o Fase 2."""
+    return get_redis_health()
+3.2.5 Opções de Redis para produção
+Serviço
+Plano gratuito
+Latência
+Recomendação
+Railway (Redis plugin)
+Sim — 512MB RAM
+< 5ms (mesmo datacenter)
+⭐ Melhor opção se já usa Railway
+Upstash
+Sim — 10K requests/dia
+< 10ms (HTTP-based)
+Boa para uso baixo/médio
+Redis Cloud
+Sim — 30MB
+< 5ms
+Opção confiável com boa documentação
+Redis self-hosted
+Custo de infraestrutura
+< 1ms (local)
+Para controle total — exige manutenção
+FASE
+3
+Message Buffer com Redis — Consolidação entre Workers
+Implementar após Fase 2 estabilizar · 4–6 horas · Requer Redis da Fase 2
+Objetivo: O AsyncMessageBuffer atual usa asyncio.Task que é local a cada worker. Duas mensagens rápidas de um mesmo usuário que caiam em workers diferentes não são consolidadas. Esta fase move o estado do buffer para Redis, garantindo que apenas um worker processe as mensagens de cada sessão.
+⚠️ COMPLEXIDADE:  Este é o módulo mais delicado. O asyncio.Task não pode ser migrado para Redis diretamente — a lógica de debounce precisa ser reimplementada usando um mecanismo diferente. Recomendamos implementar esta fase com testes extensivos antes de ir para produção.
+3.3.1 Estratégia: Redis com Lua Script para debounce atômico
+O problema central é garantir que apenas UM worker execute o callback após o período de silêncio. Para isso, usamos um Lua script que torna a operação check-and-claim atômica:
+"""
+message_buffer_redis.py — buffer de mensagens com Redis
+Estratégia:
+  - Mensagens são armazenadas em uma lista Redis: buffer:{session_id}
+  - Um 'lock' Redis impede que múltiplos workers processem o mesmo buffer
+  - Debounce: o worker espera silêncio de N segundos antes de processar
+"""
+import asyncio
+import json
+import logging
+import time
+from typing import Any, Callable, Coroutine
+import redis.asyncio as aioredis
+logger = logging.getLogger(__name__)
+DEBOUNCE_SECONDS = 2.5
+BUFFER_TTL = 300  # 5 minutos de TTL para chaves Redis
+LOCK_TTL = 120    # 2 minutos de TTL para o lock
+class RedisMessageBuffer:
+    """Buffer de mensagens com estado no Redis."""
+    def __init__(self, redis_url: str, debounce_seconds: float = DEBOUNCE_SECONDS):
+        self.redis_url = redis_url
+        self.debounce_seconds = debounce_seconds
+        self._redis: aioredis.Redis = None
+        self._local_tasks: dict[str, asyncio.Task] = {}
+    async def _get_redis(self) -> aioredis.Redis:
+        if self._redis is None:
+            self._redis = await aioredis.from_url(
+                self.redis_url, decode_responses=True
+            )
+        return self._redis
+    def _buffer_key(self, session_id: str) -> str:
+        return f"msgbuf:{session_id}"
+    def _timestamp_key(self, session_id: str) -> str:
+        return f"msgts:{session_id}"
+    def _lock_key(self, session_id: str) -> str:
+        return f"msglk:{session_id}"
+    async def add_message(
+        self,
+        session_id: str,
+        message_text: str,
+        process_callback: Callable,
+        *args,
+        **kwargs
+    ):
+        """Adiciona mensagem ao buffer Redis e inicia watcher local."""
+        r = await self._get_redis()
+        # Empurrar mensagem para lista Redis
+        await r.rpush(self._buffer_key(session_id), message_text)
+        await r.expire(self._buffer_key(session_id), BUFFER_TTL)
+        # Atualizar timestamp da última mensagem
+        await r.set(self._timestamp_key(session_id), str(time.time()))
+        await r.expire(self._timestamp_key(session_id), BUFFER_TTL)
+        # Iniciar watcher local se não existe
+        if session_id not in self._local_tasks or self._local_tasks[session_id].done():
+            self._local_tasks[session_id] = asyncio.create_task(
+                self._watch_and_process(session_id, process_callback, *args, **kwargs)
+            )
+    async def _watch_and_process(
+        self, session_id: str, callback: Callable, *args, **kwargs
+    ):
+        """Watcher: aguarda silêncio e tenta adquirir lock para processar."""
+        r = await self._get_redis()
+        while True:
+            ts_str = await r.get(self._timestamp_key(session_id))
+            if not ts_str:
+                return
+            elapsed = time.time() - float(ts_str)
+            remaining = self.debounce_seconds - elapsed
+            if remaining > 0.05:
+                await asyncio.sleep(remaining)
+                continue
+            break
+        # Tentar adquirir lock atômico
+        import uuid
+        lock_val = str(uuid.uuid4())
+        acquired = await r.set(
+            self._lock_key(session_id), lock_val,
+            nx=True,  # NX = só seta se não existe
+            ex=LOCK_TTL
+        )
+        if not acquired:
+            return  # Outro worker já está processando
+        try:
+            # Coletar e limpar mensagens
+            messages = await r.lrange(self._buffer_key(session_id), 0, -1)
+            await r.delete(self._buffer_key(session_id))
+            await r.delete(self._timestamp_key(session_id))
+            if messages:
+                full_text = '. '.join(m.strip() for m in messages)
+                logger.info(f'[BUFFER-REDIS] Processando {len(messages)} msgs de {session_id[-4:]}')
+                await callback(full_text, *args, **kwargs)
+        finally:
+            # Liberar lock somente se ainda é nosso
+            current = await r.get(self._lock_key(session_id))
+            if current == lock_val:
+                await r.delete(self._lock_key(session_id))
+3.3.2 Instanciar o RedisMessageBuffer
+Em webhooks.py, substitua o message_buffer global:
+import os
+from app.core.message_buffer import AsyncMessageBuffer
+from app.core.message_buffer_redis import RedisMessageBuffer
+# Seleção automática baseada na disponibilidade do Redis
+_redis_url = os.getenv('REDIS_URL')
+if _redis_url:
+    message_buffer = RedisMessageBuffer(
+        redis_url=_redis_url,
+        debounce_seconds=2.5
+    )
+else:
+    # Fallback para o buffer em memória (desenvolvimento local)
+    message_buffer = AsyncMessageBuffer(debounce_seconds=2.5)
+    logger.warning('REDIS_URL não configurado — usando buffer em memória (apenas dev)')
+4. Plano de Testes
+4.1 Testes por Cenário (Fase 1 e 2)
+Teste
+Como executar
+Resultado esperado
+Cenário A — Reinício
+Inicia conversa, reinicia uvicorn, envia nova mensagem
+Agente mantém contexto completo da conversa anterior
+Cenário B — Workers
+Inicia com --workers=4, envia 10 msgs alternadas
+Todas as respostas coerentes com o histórico
+Cenário C — Redis down
+Para o Redis durante conversa, envia mensagem
+Sistema cai para Supabase e responde normalmente
+TTL de sessão
+Aguarda 31 minutos sem interação, envia mensagem
+Nova sessão iniciada sem erros
+clear_session
+Envia /reset pelo WhatsApp
+Agente responde como se fosse primeira interação
+4.2 Script de teste de carga básico
+# test_session_store.py — execute antes de fazer deploy
+import sys
+sys.path.insert(0, 'backend')
+from app.core.session_store_v2 import get_session, save_session, clear_session
+from app.core.state import ConversationState
+TENANT = 'test-tenant'
+SESSION = 'test-session-001'
+print('Testando save_session...')
+state = ConversationState(tenant_id=TENANT, session_id=SESSION)
+state.last_user_message = 'Quero uma camiseta azul M'
+state.search_query = 'camiseta azul'
+save_session(TENANT, SESSION, state)
+print('  ✓ save_session OK')
+print('Testando get_session (deve retornar estado salvo)...')
+recovered = get_session(TENANT, SESSION)
+assert recovered is not None, 'FALHOU: get_session retornou None'
+assert recovered.search_query == 'camiseta azul', 'FALHOU: search_query não preservado'
+print('  ✓ get_session OK')
+print('Testando clear_session...')
+clear_session(TENANT, SESSION)
+after_clear = get_session(TENANT, SESSION)
+assert after_clear is None or not after_clear.search_query, 'FALHOU: sessão não foi limpa'
+print('  ✓ clear_session OK')
+print('\n✅ Todos os testes passaram!')
+5. Guia de Deploy
+5.1 Fase 1 — Zero downtime
+A Fase 1 não requer nova infraestrutura. O deploy pode ser feito normalmente:
+☐  Criar session_store_v2.py com implementação Supabase
+☐  Atualizar import em webhooks.py
+☐  Executar test_session_store.py em staging
+☐  Deploy normal (Railway / Render / VPS)
+☐  Monitorar logs por 30 minutos após deploy
+5.2 Fase 2 — Com Redis
+☐  Criar serviço Redis no Railway (ou escolher Upstash)
+☐  Copiar REDIS_URL para variáveis de ambiente da aplicação
+☐  Atualizar session_store_v2.py com implementação Redis+Supabase
+☐  Testar localmente: REDIS_URL=redis://localhost:6379/0 python test_session_store.py
+☐  Deploy da aplicação com REDIS_URL configurado
+☐  Verificar endpoint GET /health/redis retorna connected: true
+☐  Monitorar Redis (memória e conexões) nas primeiras 24h
+🔐 SEGURANÇA:  Nunca commite REDIS_URL no repositório. Use variáveis de ambiente ou secrets do seu provedor de nuvem. Se usar Upstash, sempre use rediss:// (com TLS) em produção.
+6. Monitoramento Pós-Implementação
+6.1 Métricas a acompanhar
+Métrica
+Como medir
+Alerta se
+Sessões recuperadas do Redis
+Log: 'Cache repopulated from Supabase' indica miss
+Taxa de miss > 20% indica Redis instável
+Latência de get_session
+Adicionar timing nos logs de debug
+> 50ms de forma consistente
+Erros de Redis
+Log: 'Redis get/set error'
+Qualquer erro em produção
+Memória Redis
+Dashboard do Railway/Upstash
+> 80% do limite do plano
+Sessions expiradas
+Monitorar conversations.state vazio
+Aumento súbito indica bug de TTL
+6.2 Logs a monitorar
+# Logs normais (INFO):
+[INFO] Redis conectado com sucesso
+[INFO] [BUFFER-REDIS] Processando 2 msgs de 1234
+# Logs de atenção (WARNING) — sistema continua funcionando:
+[WARNING] Redis indisponível, usando apenas Supabase: Connection refused
+[WARNING] Redis get error: timeout
+# Logs de erro (ERROR) — investigar imediatamente:
+[ERROR] Supabase set error: ...
+[ERROR] save_session failed for 5511999: ...
+7. Resumo Executivo
+Fase
+O que muda
+Benefício
+Prazo sugerido
+1 — Quick Fix
+session_store_v2.py usando Supabase
+Elimina 100% das perdas de contexto por restart e workers
+Hoje / amanhã
+2 — Redis
+Adiciona cache Redis na frente do Supabase
+Latência <1ms, arquitetura de produção completa
+Esta semana
+3 — Buffer
+message_buffer_redis.py com lock distribuído
+Consolidação de mensagens entre workers em escala
+Próxima sprint
+🎯 RECOMENDAÇÃO FINAL:  Implemente a Fase 1 hoje — é segura, rápida e resolve o problema imediatamente sem nova infraestrutura. As Fases 2 e 3 são melhorias progressivas que consolidam a arquitetura para crescimento futuro.
+Nouvaris  ·  Plano de Implementação — Persistência de Sessão  ·  v1.0  ·  Junho 2025

@@ -1,3 +1,4 @@
+import logging
 from langgraph.graph import END, StateGraph
 
 from app.core.state import ConversationState
@@ -5,10 +6,20 @@ from app.graphs.sales_graph import run_sales_graph
 from app.graphs.store_qa_graph import run_store_qa_graph
 from app.graphs.support_graph import run_support_graph
 
+_logger = logging.getLogger(__name__)
 
-def _select_domain(state: ConversationState) -> str:
-    if state.domain in {"sales", "support", "store_qa"}:
-        return state.domain
+
+def _select_domain(state) -> str:
+    # Handle both dict and Pydantic state
+    if isinstance(state, dict):
+        domain = state.get("domain")
+    else:
+        domain = getattr(state, "domain", None)
+    
+    if domain in {"sales", "support", "store_qa"}:
+        _logger.info(f"[MAIN_GRAPH] Routing to domain: {domain}")
+        return domain
+    _logger.info(f"[MAIN_GRAPH] Domain '{domain}' not recognized, defaulting to store_qa")
     return "store_qa"
 
 

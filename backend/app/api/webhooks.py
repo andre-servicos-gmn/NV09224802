@@ -27,8 +27,22 @@ from app.adapters.evolution_adapter import EvolutionAdapter
 from app.adapters.whatsapp_base import WhatsAppAdapterBase
 from app.core.tenancy import TenantRegistry
 from app.sync.sync_service import SyncService
-from app.core.message_buffer import message_buffer
-from app.core.session_store import get_session, save_session
+import os
+from app.core.message_buffer import AsyncMessageBuffer
+from app.core.message_buffer_redis import RedisMessageBuffer
+
+# Seleção automática baseada na disponibilidade do Redis
+_redis_url = os.getenv('REDIS_URL')
+if _redis_url:
+    message_buffer = RedisMessageBuffer(
+        redis_url=_redis_url,
+        debounce_seconds=2.5
+    )
+else:
+    # Fallback para o buffer em memória (desenvolvimento local)
+    message_buffer = AsyncMessageBuffer(debounce_seconds=2.5)
+    
+from app.core.session_store_v2 import get_session, save_session
 from app.core.state import ConversationState
 # Assumed location based on grep search
 from app.graphs.main_graph import run_main_graph
@@ -141,6 +155,48 @@ def _record_sent_message(text: str):
     SENT_MESSAGE_HASHES.append((now + 60, text_hash))
 
 
+<<<<<<< Updated upstream
+=======
+async def _bg_persist_message(tenant_id: str, session_id: str, message: Any, created_at_iso: str | None):
+    """Background task to persist message to DB without blocking webhook.
+    
+    This function handles both conversation retrieval/creation and message saving
+    in a separate task, allowing the webhook to return immediately and the
+    message buffer to function without DB latency interference.
+    """
+    try:
+        # Blocking I/O - Get Conversation
+        # Use tenant UUID (not slug) because conversations.tenant_id is UUID type
+        conversation = await asyncio.to_thread(
+            get_or_create_conversation,
+            tenant_id=tenant_id,  # This is already the UUID from whatsapp_webhook
+            session_id=session_id,
+            channel="whatsapp",
+            number=message.from_number
+        )
+        conversation_id = conversation.get("id")
+        
+        # Blocking I/O - Save Message
+        saved = await asyncio.to_thread(
+            save_message,
+            conversation_id=conversation_id,
+            sender_type="user",
+            content=message.text,
+            metadata={
+                "provider": "evolution",
+                "message_id": message.message_id,
+                "from_number": message.from_number,
+                "push_name": getattr(message, "push_name", None)
+            },
+            created_at=created_at_iso
+        )
+        logger.info(f"[BG] Persisted msg {message.message_id} to conv {conversation_id} ts={created_at_iso}")
+    except Exception as e:
+        logger.error(f"[BG] Failed to persist message: {e}")
+
+
+
+>>>>>>> Stashed changes
 def _is_echo_message(text: str) -> bool:
     """Check if text matches a recently sent message."""
     global SENT_MESSAGE_HASHES
@@ -237,6 +293,23 @@ async def process_consolidated_message(
             logger.error(f"WhatsApp adapter could not be recreated for {tenant_id}")
             return
 
+<<<<<<< Updated upstream
+=======
+        # Check for Handoff/Paused status
+        # If status is "handoff" or "human_active", the agent must NOT respond.
+        # Use tenant.uuid because conversations.tenant_id is UUID type
+        tenant_uuid = tenant.uuid or tenant.tenant_id
+        conversation_data = await asyncio.to_thread(
+            get_or_create_conversation,
+            tenant_id=tenant_uuid,
+            session_id=session_id
+        )
+        
+        if conversation_data and conversation_data.get("status") in ["handoff", "human_active"]:
+            logger.info(f"🛑 Conversation {session_id} is PAUSED/HANDOFF. Agent skipping execution.")
+            return
+
+>>>>>>> Stashed changes
         # Handle Reset Command
         if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
             from app.core.session_store import clear_session
@@ -309,6 +382,12 @@ async def process_consolidated_message(
         # This was missing! Without this, the agent never updated intent/domain based on new input.
         decision = classify(text, context=context, use_llm=True)
         
+        logger.info(
+            f"[ROUTER] domain={decision.domain}, intent={decision.intent}, "
+            f"entities={decision.entities}, confidence={decision.confidence:.2f}, "
+            f"reason={decision.reason}"
+        )
+        
         # Apply decision to state
         state.set_intent(decision.intent)
         
@@ -329,7 +408,63 @@ async def process_consolidated_message(
 
         if decision.sentiment_level != "calm" or _has_frustration(text):
             state.bump_frustration()
+<<<<<<< Updated upstream
             # If high frustration, force handoff potentially? (Handled by graph policies usually)
+=======
+            
+        # Stop Agent if Handoff is required
+        if state.needs_handoff or state.frustration_level >= 3:
+            reason = state.handoff_reason or "high_frustration"
+            if state.frustration_level >= 3 and not state.handoff_reason:
+                reason = "high_frustration"
+            
+            logger.info(f"🛑 Handoff triggered for {session_id}. Reason: {reason}")
+            
+            # Persist Handoff
+            try:
+                # Need conversation ID (we have get_or_create_conversation imported)
+                # But we are in a non-async usage? 
+                # This function is async def process_consolidated_message.
+                # get_or_create_conversation is sync (blocking).
+                
+                conversation = await asyncio.to_thread(
+                    get_or_create_conversation,
+                    tenant_id=tenant_uuid,
+                    session_id=session_id,
+                    channel="whatsapp",
+                    number=from_number
+                )
+                conv_id = conversation.get("id")
+                
+                if conv_id:
+                    supabase = get_supabase()
+                    supabase.table("conversations").update({
+                        "status": "handoff",
+                        "handoff_reason": reason
+                    }).eq("id", conv_id).execute()
+                    
+                    save_message(
+                        conversation_id=conv_id,
+                        sender_type="system",
+                        content=f"Conversa transferida para humano. Motivo: {reason}",
+                        metadata={
+                            "event": "handoff",
+                            "reason": reason
+                        }
+                    )
+            except Exception as e:
+                logger.error(f"[ERR] Failed to persist handoff state: {e}")
+            
+            return
+>>>>>>> Stashed changes
+
+        # Extrair telefone do cliente
+        if from_number:
+            raw_phone = from_number.split("@")[0]  # remove @s.whatsapp.net se houver
+            clean_phone = "".join(c for c in raw_phone if c.isdigit())
+            if clean_phone:
+                state.customer_phone = clean_phone
+                state.metadata["customer_phone_raw"] = clean_phone
 
         # Process with AI agent/graph
         result_state = await asyncio.to_thread(run_main_graph, state, tenant)
@@ -347,10 +482,20 @@ async def process_consolidated_message(
             # Split into multiple messages for natural conversation feel
             chunks = _split_message(response_text)
             
+<<<<<<< Updated upstream
             for i, chunk in enumerate(chunks):
                 send_result = await adapter.send_text_message(
                     to=from_number,
                     text=chunk,
+=======
+            # Persist AGENT message to database
+            try:
+                # Retrieve conversation ID
+                conversation = get_or_create_conversation(
+                    tenant_id=tenant_uuid,
+                    session_id=session_id,
+                    channel="whatsapp"
+>>>>>>> Stashed changes
                 )
                 
                 if not send_result.success:
@@ -528,8 +673,31 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             registry = TenantRegistry()
             tenant = await registry.get_async(tenant_id, use_cache=True)
     except ValueError:
+<<<<<<< Updated upstream
         logger.error(f"❌ Tenant not found in registry: {tenant_id}")
         raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+=======
+        # FAILSAFE: Always use Mock/Demo tenant for testing locally
+        # This redirects ANY incoming webhook to the seeded "Demo Store" so it shows up in the panel
+        logger.warning(f"⚠️ Tenant '{tenant_id}' not found. Redirecting to DEMO tenant.")
+        
+        # FORCE tenant_id to the one we seeded in the DB
+        # This ensures persistence works (FK checks) and Realtime triggers for the Demo dashboard
+        original_tenant_id = tenant_id
+        tenant_id = "c35fe360-dc69-4997-9d1f-ae57f4d8a135"
+        
+        from app.core.tenancy import TenantConfig
+        tenant = TenantConfig(
+            tenant_id="demo",
+            uuid=tenant_id,
+            name="Demo Store",
+            active=True,
+            whatsapp_provider="evolution",
+            whatsapp_instance_name="test_instance",
+            whatsapp_instance_url="http://localhost:8080",
+            whatsapp_api_key="mock_key"
+        )
+>>>>>>> Stashed changes
     
     # Get WhatsApp adapter
     adapter = _get_whatsapp_adapter(tenant)
@@ -564,12 +732,37 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     raw_id = adapter.get_session_id() or message.from_number
     session_id = "".join(filter(str.isdigit, str(raw_id)))
     
+<<<<<<< Updated upstream
     # Buffer message
+=======
+
+    
+    logger.info(f"[WH] received tenant={tenant_id[:8]}... from={session_id}")
+    
+    # Persist to database (Background Task)
+    # Allows immediate return for buffering performance
+    created_at_iso = None
+    msg_ts = getattr(message, "timestamp", 0)
+    if msg_ts:
+        try:
+            ts_val = float(msg_ts)
+            if ts_val > 1e11:
+                ts_val = ts_val / 1000.0
+            created_at_iso = datetime.fromtimestamp(ts_val, tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+
+    asyncio.create_task(
+        _bg_persist_message(tenant.uuid or tenant.tenant_id, session_id, message, created_at_iso)
+    )
+    
+    # Buffer message for AI processing
+>>>>>>> Stashed changes
     await message_buffer.add_message(
         session_id,
         message.text,
         process_consolidated_message,
-        tenant_id,
+        tenant.uuid or tenant.tenant_id,
         message.from_number,
         message.message_id,
         session_id

@@ -123,8 +123,8 @@ def create_conversation(
     """Create a new conversation with all required fields."""
     client = get_client()
     data = {
-        "tenant_id": tenant_id,
-        "session_id": session_id,
+        "tenant_id": str(tenant_id),
+        "session_id": str(session_id),
         "channel": channel,
         "status": "active",
         "domain": domain,
@@ -132,9 +132,9 @@ def create_conversation(
         "state": {},
     }
     if user_id:
-        data["user_id"] = user_id
+        data["user_id"] = str(user_id)
     if number:
-        data["number"] = number
+        data["number"] = str(number)
 
     result = client.table("conversations").insert(data).execute()
     return result.data[0] if result.data else {}
@@ -146,8 +146,8 @@ def get_conversation_by_session(tenant_id: str, session_id: str) -> dict | None:
     result = (
         client.table("conversations")
         .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("session_id", session_id)
+        .eq("tenant_id", str(tenant_id))
+        .eq("session_id", str(session_id))
         .execute()
     )
     return result.data[0] if result.data else None
@@ -192,7 +192,7 @@ def get_or_create_conversation(
         return conversation
 
 
-    return create_conversation(tenant_id, session_id, user_id, channel, domain, number)
+    return create_conversation(str(tenant_id), str(session_id), user_id, channel, domain, number)
 
 
 def update_conversation_state(conversation_id: str, state: dict) -> dict:
@@ -480,3 +480,5 @@ def get_product_by_variant(tenant_id: str, variant_id: str) -> dict | None:
         .execute()
     )
     return result.data[0] if result.data else None
+
+

@@ -75,6 +75,15 @@ class ConversationState(BaseModel):
 
     # --- MÉTODOS UTILITÁRIOS ---
 
+    # WISMO fields (adicionar ao state.py)
+    customer_phone: str | None = None        # Telefone extraído do WhatsApp
+    order_status: str | None = None          # Status humanizado do pedido
+    tracking_code: str | None = None         # Código de rastreio bruto (ex: BR123456789)
+    tracking_last_event: str | None = None   # Última movimentação logística
+    estimated_delivery: str | None = None    # Data estimada de entrega (se disponível)
+    wismo_lookup_done: bool = False          # Flag: já tentamos buscar o pedido nessa sessão
+    wismo_identified_by: str | None = None  # "phone" | "email" | "order_id"
+
     def bump_frustration(self) -> None:
         self.frustration_level += 1
 

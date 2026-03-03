@@ -272,6 +272,17 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
             ):
                 raise ValueError("LLM sanity check failed.")
             entities = _merge_entities(result.entities, extract_entities_heuristic(message))
+            
+            # Safety net: ensure domain matches intent
+            # The LLM might classify intent as "order_status" but domain as "store_qa"
+            expected_domain = classify_domain_heuristic(result.intent)
+            if expected_domain != result.domain and result.intent != INTENT_GENERAL and result.intent != INTENT_GREETING:
+                import logging
+                logging.getLogger(__name__).info(
+                    f"[ROUTER] Domain override: LLM said {result.domain} but intent {result.intent} → {expected_domain}"
+                )
+                result.domain = expected_domain
+            
             decision = RouterDecision(
                 domain=result.domain,
                 intent=result.intent,

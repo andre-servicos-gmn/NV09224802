@@ -160,6 +160,13 @@ async def health():
     """Global health check endpoint."""
     return {"status": "healthy"}
 
+from app.core.session_store_v2 import get_redis_health
+
+@app.get('/health/redis')
+async def redis_health():
+    """Health check para Redis — útil para monitorar o Fase 2."""
+    return get_redis_health()
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -173,3 +180,11 @@ if __name__ == "__main__":
         port=port,
         reload=debug,
     )
+
+
+
+
+
+
+
+

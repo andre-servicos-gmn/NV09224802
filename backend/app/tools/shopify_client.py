@@ -281,3 +281,225 @@ class ShopifyClient:
             "inventory_quantity": inventory_quantity,
             "available": inventory_quantity > 0,
         }
+
+    def get_order_by_number(self, order_number: str) -> dict:
+        """
+        Busca pedido pelo número visível ao cliente (ex: "1001").
+
+        A Shopify diferencia:
+          - order_number (ex: 1001) → visível ao cliente, campo `order_number`
+          - id (ex: 5832700123) → ID interno, nunca expor
+
+        Args:
+            order_number: Número do pedido informado pelo cliente
+
+        Returns:
+            dict com campos padronizados do pedido
+
+        Raises:
+            ValueError: Se pedido não encontrado
+            requests.RequestException: Falha na comunicação
+        """
+        response = requests.get(
+            f"{self.base_url}/orders.json",
+            params={
+                "name": f"#{order_number}",   # Shopify aceita "#1001"
+                "status": "any",
+                "fields": "id,order_number,name,email,phone,financial_status,fulfillment_status,fulfillments,created_at,estimated_delivery_at",
+            },
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        orders = data.get("orders", [])
+
+        # Fallback: buscar sem o "#" se não encontrar
+        if not orders:
+            response2 = requests.get(
+                f"{self.base_url}/orders.json",
+                params={
+                    "name": order_number,
+                    "status": "any",
+                    "fields": "id,order_number,name,email,phone,financial_status,fulfillment_status,fulfillments,created_at,estimated_delivery_at",
+                },
+                headers=self.headers,
+                timeout=10,
+            )
+            response2.raise_for_status()
+            data = response2.json()
+            orders = data.get("orders", [])
+
+        if not orders:
+            raise ValueError(f"Pedido #{order_number} não encontrado.")
+
+        order = orders[0]
+        fulfillments = order.get("fulfillments") or []
+
+        # Extrair tracking code e carrier da primeira fulfillment com tracking
+        tracking_code = None
+        tracking_url = None
+        tracking_company = None
+        for f in fulfillments:
+            if f.get("tracking_number"):
+                tracking_code = f["tracking_number"]
+                tracking_url = f.get("tracking_url")
+                tracking_company = f.get("tracking_company")
+                break
+
+        return {
+            "shopify_order_id": str(order.get("id")),       # interno, não expor ao cliente
+            "order_number": str(order.get("order_number")), # ex: "1001"
+            "order_name": order.get("name"),                # ex: "#1001"
+            "customer_email": order.get("email"),
+            "customer_phone": order.get("phone"),
+            "financial_status": order.get("financial_status"),   # paid, pending, refunded
+            "fulfillment_status": order.get("fulfillment_status"), # fulfilled, partial, null
+            "tracking_code": tracking_code,
+            "tracking_url": tracking_url,
+            "tracking_company": tracking_company,
+            "created_at": order.get("created_at"),
+            "estimated_delivery_at": order.get("estimated_delivery_at"),
+        }
+
+    def get_orders_by_phone(self, phone: str) -> list[dict]:
+        """
+        Busca pedidos pelo telefone do cliente usando busca em 2 etapas.
+
+        IMPORTANTE: Não usar /orders.json com filtro em memória — isso só busca os
+        últimos N pedidos da loja inteira e perde pedidos mais antigos.
+
+        Etapa 1: GET /customers/search.json?query=phone:{phone} → acha o customer_id
+        Etapa 2: GET /orders.json?customer_id={id}&status=any → pedidos desse cliente
+
+        DDI: O Evolution manda "5511999998888" mas a Shopify pode ter gravado "11999998888".
+        Testamos ambos os formatos para garantir o match.
+
+        Args:
+            phone: Número de telefone (somente dígitos, com ou sem DDI 55)
+                   Ex: "5511999998888" ou "11999998888"
+
+        Returns:
+            Lista de pedidos recentes (máx 3), ordenados por data decrescente
+        """
+        def _digits_only(p: str) -> str:
+            return "".join(c for c in p if c.isdigit())
+
+        def _phone_variants(p: str) -> list[str]:
+            """Gera variantes do telefone com e sem DDI 55 para bater na Shopify."""
+            digits = _digits_only(p)
+            variants = [digits]
+            # Se começa com 55 (DDI Brasil), testar também sem ele
+            if digits.startswith("55") and len(digits) > 11:
+                variants.append(digits[2:])
+            # Se não começa com 55, testar também com ele
+            elif not digits.startswith("55"):
+                variants.append("55" + digits)
+            return variants
+
+        customer_id = None
+        for phone_variant in _phone_variants(phone):
+            try:
+                resp = requests.get(
+                    f"{self.base_url}/customers/search.json",
+                    params={"query": f"phone:{phone_variant}", "fields": "id,email,phone"},
+                    headers=self.headers,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                customers = resp.json().get("customers", [])
+                if customers:
+                    customer_id = customers[0]["id"]
+                    break  # Achou, não precisa testar outras variantes
+            except Exception:
+                continue
+
+        if not customer_id:
+            return []  # Cliente não encontrado por nenhuma variante do telefone
+
+        # Etapa 2: buscar pedidos do cliente pelo customer_id
+        response = requests.get(
+            f"{self.base_url}/orders.json",
+            params={
+                "customer_id": customer_id,
+                "status": "any",
+                "limit": 3,
+                "fields": "id,order_number,name,email,phone,financial_status,fulfillment_status,fulfillments,created_at",
+            },
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        orders = response.json().get("orders", [])
+        result = []
+        for order in orders:
+            fulfillments = order.get("fulfillments") or []
+            tracking_code = None
+            tracking_url = None
+            for f in fulfillments:
+                if f.get("tracking_number"):
+                    tracking_code = f["tracking_number"]
+                    tracking_url = f.get("tracking_url")
+                    break
+            result.append({
+                "shopify_order_id": str(order.get("id")),
+                "order_number": str(order.get("order_number")),
+                "order_name": order.get("name"),
+                "customer_email": order.get("email"),
+                "financial_status": order.get("financial_status"),
+                "fulfillment_status": order.get("fulfillment_status"),
+                "tracking_code": tracking_code,
+                "tracking_url": tracking_url,
+                "created_at": order.get("created_at"),
+            })
+        return result
+
+    def get_orders_by_email(self, email: str) -> list[dict]:
+        """
+        Busca pedidos pelo e-mail do cliente.
+        Usado como fallback quando o telefone não encontrar nada.
+
+        Args:
+            email: E-mail do cliente
+
+        Returns:
+            Lista de pedidos recentes (máx 3)
+        """
+        response = requests.get(
+            f"{self.base_url}/orders.json",
+            params={
+                "email": email.lower().strip(),
+                "status": "any",
+                "limit": 3,
+                "fields": "id,order_number,name,email,phone,financial_status,fulfillment_status,fulfillments,created_at",
+            },
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        orders = response.json().get("orders", [])
+        result = []
+        for order in orders:
+            fulfillments = order.get("fulfillments") or []
+            tracking_code = None
+            tracking_url = None
+            for f in fulfillments:
+                if f.get("tracking_number"):
+                    tracking_code = f["tracking_number"]
+                    tracking_url = f.get("tracking_url")
+                    break
+            result.append({
+                "shopify_order_id": str(order.get("id")),
+                "order_number": str(order.get("order_number")),
+                "order_name": order.get("name"),
+                "customer_email": order.get("email"),
+                "financial_status": order.get("financial_status"),
+                "fulfillment_status": order.get("fulfillment_status"),
+                "tracking_code": tracking_code,
+                "tracking_url": tracking_url,
+                "created_at": order.get("created_at"),
+            })
+        return result
