@@ -453,7 +453,8 @@ def _build_context_prompt(
     # Conversation history
     if state.conversation_history:
         lines.append("[Histórico da Conversa]")
-        for entry in state.conversation_history:
+        # Use only the last 10 messages for context
+        for entry in state.conversation_history[-10:]:
             role = "👤 Cliente" if entry["role"] == "user" else "🤖 Você"
             message = entry.get("message", entry.get("content", ""))
             lines.append(f"{role}: {message}")
@@ -540,7 +541,6 @@ def _build_context_prompt(
         lines.append("- selected_products: (nenhum)")
 
     # Available variants
-    # Available variants
     if state.available_variants:
         lines.append("- available_variants:")
         lines.append("  (IMPORTANTE: O produto tem variantes. Pergunte qual o cliente prefere)")
@@ -574,7 +574,9 @@ def _build_context_prompt(
         lines.append(f"- errors: {error_details}")
 
     # Domain-specific data
-    if current_domain == "support":
+    if current_domain == "sales":
+        pass
+    elif current_domain == "support":
         if state.customer_email:
             lines.append(f"- customer_email: {state.customer_email}")
         ticket_id = state.metadata.get("ticket_id")
@@ -591,6 +593,8 @@ def _build_context_prompt(
             lines.append(f"- tracking_number: {tracking_number}")
         if state.ticket_opened:
             lines.append("- ticket_opened: True")
+    elif current_domain == "store_qa":
+        pass
 
     # FAQ answer if available
     faq_answer = state.metadata.get("faq_answer")
@@ -609,19 +613,24 @@ def _build_context_prompt(
     lines.append("Sem markdown. Sem aspas. Apenas o texto da mensagem.")
 
     # Special cases
-    if state.domain == "support" and not state.order_id and not state.customer_email:
-        lines.append("")
-        lines.append("⚠️ ATENÇÃO: Faltam dados do pedido.")
-        lines.append("- Se o cliente estiver apenas expressando emoção, agradecimento ou expectativa (ex: 'ansioso para chegar', 'gostei muito'), responda com empatia, celebre junto e agradeça a preferência, SEM pedir o número do pedido.")
-        lines.append("- Caso ele faça uma solicitação real de status ou rastreio, aí sim peça o número do pedido ou email.")
-        lines.append("- NUNCA invente prazos ou status específicos.")
-    
-    if state.domain == "support" and state.last_action and state.last_action_success is False:
-        lines.append("")
-        lines.append("⚠️ ATENÇÃO: A última ação FALHOU.")
-        lines.append("- Não diga que 'vou verificar' ou 'encontrei'")
-        lines.append("- Informe que não foi possível com os dados fornecidos")
-        lines.append("- Peça uma informação alternativa")
+    if current_domain == "sales":
+        pass
+    elif current_domain == "support":
+        if not state.order_id and not state.customer_email:
+            lines.append("")
+            lines.append("⚠️ ATENÇÃO: Faltam dados do pedido.")
+            lines.append("- Se o cliente estiver apenas expressando emoção, agradecimento ou expectativa (ex: 'ansioso para chegar', 'gostei muito'), responda com empatia, celebre junto e agradeça a preferência, SEM pedir o número do pedido.")
+            lines.append("- Caso ele faça uma solicitação real de status ou rastreio, aí sim peça o número do pedido ou email.")
+            lines.append("- NUNCA invente prazos ou status específicos.")
+        
+        if state.last_action and state.last_action_success is False:
+            lines.append("")
+            lines.append("⚠️ ATENÇÃO: A última ação FALHOU.")
+            lines.append("- Não diga que 'vou verificar' ou 'encontrei'")
+            lines.append("- Informe que não foi possível com os dados fornecidos")
+            lines.append("- Peça uma informação alternativa")
+    elif current_domain == "store_qa":
+        pass
 
     return "\n".join(lines)
 
@@ -667,8 +676,13 @@ def generate_humanized_response(
         print(f"[RAG] Knowledge context (first 300 chars): {knowledge_context[:300]}...")
     
     # Select system prompt based on domain
-    if domain == "support":
+    if domain == "sales":
+        from app.nodes.sales_respond import build_sales_system_prompt
+        system_prompt = build_sales_system_prompt(tenant, state)
+    elif domain == "support":
         system_prompt = build_support_prompt(tenant)
+    elif domain == "store_qa":
+        system_prompt = build_store_qa_prompt(tenant)
     else:
         system_prompt = build_store_qa_prompt(tenant)
     
@@ -702,9 +716,13 @@ def generate_humanized_response(
         response = response[1:-1]
     
     # Ensure important links are included
-    if domain == "support":
+    if domain == "sales":
+        pass
+    elif domain == "support":
         tracking_url = state.tracking_url
         if tracking_url and tracking_url not in response:
             response = f"{response}\n\n{tracking_url}"
+    elif domain == "store_qa":
+        pass
     
     return response

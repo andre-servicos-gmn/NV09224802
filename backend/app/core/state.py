@@ -52,8 +52,10 @@ class ConversationState(BaseModel):
     def add_to_history(self, role: str, message: str) -> None:
         """Add a message to conversation history (store 20, use 10 for context)."""
         self.conversation_history.append({"role": role, "message": message})
-        # O usuário solicitou que o histórico completo da conversa seja mantido e compartilhado até o fim.
-        pass
+        # Limit history to 20 messages to prevent infinite growth
+        if len(self.conversation_history) > 20:
+            self.conversation_history = self.conversation_history[-20:]
+            
         # Capture original complaint for persistent context
         if role == "user" and not self.original_complaint:
             if any(w in message.lower() for w in ["errado", "problema", "reclamação", "atrasado", "não chegou", "defeito"]):
