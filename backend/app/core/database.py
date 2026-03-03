@@ -224,6 +224,7 @@ def save_message(
     intent: str | None = None,
     domain: str | None = None,
     metadata: dict | None = None,
+    created_at: str | None = None,
 ) -> dict:
     """Save a message to the conversation.
     
@@ -233,7 +234,8 @@ def save_message(
         content: Message content
         intent: Detected intent (optional)
         domain: Domain (sales, support, store_qa)
-        metadata: Additional metadata dict (can include event type for system messages)
+        metadata: Additional metadata dict
+        created_at: Optional ISO timestamp to force specific time
     """
     client = get_client()
     data = {
@@ -247,6 +249,8 @@ def save_message(
         data["domain"] = domain
     if metadata:
         data["metadata"] = metadata
+    if created_at:
+        data["created_at"] = created_at
 
     try:
         # Save message
