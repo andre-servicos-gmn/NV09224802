@@ -1,46 +1,41 @@
-import sys
+import asyncio
 import os
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+import sys
 
-from dotenv import load_dotenv
-load_dotenv()
+# Add parent path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.core.llm_humanized import generate_humanized_response, _get_brand_voice_guidelines
 from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
+from app.nodes.support_respond import support_respond
 
 def main():
-    print("Testing Brand Voice Mapping...")
+    # Set up fake tenant
     tenant = TenantConfig(
         tenant_id="demo",
-        name="Nouvaris Demo",
-        brand_voice="professional", # Testing the alias from Frontend
-        active=True
+        name="Loja Demo",
+        brand_voice="simpático"
     )
-    
-    guidelines = _get_brand_voice_guidelines(tenant)
-    print(f"Guidelines length: {len(guidelines)}")
-    if "Profissional e respeitoso" in guidelines:
-        print("SUCCESS: 'professional' mapped to 'formal' correctly.")
-    else:
-        print("FAIL: 'professional' did NOT map to 'formal'.")
-        print(f"Got: {guidelines[:100]}...")
 
-    print("\nTesting Response Generation...")
+    # Set up state
     state = ConversationState(
         tenant_id="demo",
-        session_id="test_prompt",
-        intent="general",
-        last_user_message="Quais serviços vocês oferecem? Tenho interesse em automação.",
-        conversation_history=[{"role": "user", "message": "Oi"}]
+        session_id="test1234",
+        domain="support",
+        intent="order_status",
+        last_user_message="gostei muito da minha compra, to esperando chegar ansioso",
+        metadata={"dummy": "data"}   
     )
-    
+
+    # Call the node
+    print("Running node...")
     try:
-        response = generate_humanized_response(state, tenant, domain="store_qa")
-        print(f"\nAgent Response:\n{response}")
+        state = support_respond(state, tenant)
+        print(f"Result: {state.last_bot_message}")
+        if "response_error" in state.metadata:
+            print(f"Error caught: {state.metadata['response_error']}")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Unhandled Exception: {e}")
 
 if __name__ == "__main__":
     main()

@@ -17,6 +17,7 @@ class ConversationState(BaseModel):
     search_query: Optional[str] = None
     selected_products: List[dict] = Field(default_factory=list)
     available_variants: List[dict] = Field(default_factory=list)
+    selected_variant_id: Optional[str] = None
     cart_items: List[dict] = Field(default_factory=list)
     
     # [NOVO] O Link Sagrado - Diferente de tracking_url!
@@ -28,6 +29,7 @@ class ConversationState(BaseModel):
     tracking_url: Optional[str] = None    # Link dos Correios/Loggi
     refund_status: Optional[str] = None   # [NOVO] Para o agente saber se foi aprovado
     original_complaint: Optional[str] = None
+    ticket_opened: bool = False
     
     # --- MEMÓRIA COGNITIVA (A Mágica Nova) ---
     # Fatos Rígidos (CPF, CEP, IDs) - O que o prompt de memória extrai como 'hard_facts'
@@ -90,6 +92,7 @@ class ConversationState(BaseModel):
     def add_to_history(self, role: str, message: str) -> None:
         """Adiciona mensagem e mantém a janela de contexto limpa (últimas 20)."""
         self.conversation_history.append({"role": role, "message": message})
+        # Limit history to 20 messages to prevent infinite growth
         if len(self.conversation_history) > 20:
             self.conversation_history = self.conversation_history[-20:]
             

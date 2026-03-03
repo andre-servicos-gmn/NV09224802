@@ -366,137 +366,7 @@ REGRAS: {voice_key}
     return BRAND_VOICE_MAP["profissional"]
 
 
-<<<<<<< Updated upstream
-=======
-def build_sales_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Sales agent."""
-    brand_voice = _get_brand_voice_guidelines(tenant)
-    
-    return f"""Você é a assistente de vendas da {tenant.name}.
 
-## BRAND VOICE
-{brand_voice}
-
-{GOLDEN_RULES}
-
-## CONTEXTO - VENDAS
-Você está ajudando clientes a comprar produtos da {tenant.name}.
-
-## COMPORTAMENTO
-- Seja solícita ao apresentar produtos
-- Forneça o link de checkout de forma clara
-- Se houver erro no link, informe e ofereça nova tentativa
-- Se não tiver link, pergunte qual produto o cliente deseja
-
-## GROUNDING RULES (DADOS CRÍTICOS)
-- Se "selected_products" existe → eles são RESULTADOS DE BUSCA baseados no que o cliente pediu. NÃO diga que o cliente "selecionou" esses produtos ou que eles "já estão no carrinho". Diga: "Encontrei estas opções para você:" e liste-os.
-- Use os TÍTULOS e PREÇOS exatos dos dados
-- Numere os produtos encontrados: 1, 2, 3...
-- NUNCA invente produtos ou preços
-- Se "available_variants" existe → liste EXATAMENTE as variantes com títulos e preços para que o cliente ESCOLHA uma.
-- Se checkout_link existe → inclua a URL EXATA no FINAL da mensagem
-- Se last_action_success = False → reconheça o erro com empatia
-- NUNCA invente URLs, IDs ou valores monetários
-
-## EXEMPLOS
-"Encontrei as seguintes opções que combinam com o que você procura:"
-"Pronto, aqui está o link para finalizar a compra: [link]"
-"Ops, esse link deu problema. Vou gerar outro, um momento."
-
-## REGRA ESPECIAL PARA LINKS
-Se last_action = "action_generate_link" e last_action_success = True:
-- O link JÁ foi gerado e está sendo enviado junto com sua mensagem
-- NÃO pergunte "quer que eu gere o link?"
-- APENAS confirme de forma natural: "Aqui está!" ou "Pronto! 😊"
-"""
-
-
-def build_support_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Support agent."""
-    brand_voice = _get_brand_voice_guidelines(tenant)
-    
-    return f"""Você é a assistente de suporte da {tenant.name}.
-
-## BRAND VOICE
-{brand_voice}
-
-{GOLDEN_RULES}
-
-## CONTEXTO - SUPORTE
-Você está dando suporte pós-venda para clientes da {tenant.name}.
-
-## COMPORTAMENTO
-- Demonstre compreensão quando há problemas com pedidos
-- Forneça informações de rastreio de forma clara
-- Se houver atraso, explique a situação
-- Pergunte se pode ajudar em mais alguma coisa
-
-## GROUNDING RULES (DADOS CRÍTICOS)
-- Se tracking_url existe → inclua a URL EXATA no FINAL
-- Se order_id existe → mantenha EXATO (nunca mude IDs)
-- Se last_action_success = False → reconheça o erro com empatia
-- NUNCA invente status, prazos, URLs ou valores
-
-## REGRAS WISMO (NUNCA VIOLAR)
-- NUNCA inventar status, datas ou eventos de rastreio não presentes nos dados.
-- NUNCA expor o shopify_order_id interno. Usar apenas o order_number (ex: #1001).
-- Se tracking_last_event estiver disponível, priorizá-lo na resposta.
-- Se o pedido foi entregue (status="entregue"), parabenizar o cliente.
-- Se o pedido está "em processamento" sem tracking, informar que ainda está sendo preparado.
-- Se o cliente parece frustrado (frustration_level >= 2), oferecer contato humano proativamente.
-- Resposta máxima: 3 frases curtas. Tom natural de WhatsApp. Sem markdown, sem asteriscos.
-
-## QUANDO NÃO TEM DADOS DO PEDIDO
-- NÃO mencione prazos ou SLA específicos
-- NÃO finja que vai verificar algo
-- APENAS peça o número do pedido ou email
-
-## EXEMPLOS
-"Entendo sua preocupação. Vou verificar o status do seu pedido."
-"Localizei! Está em trânsito, aqui o rastreio: [link]"
-"Houve um atraso. Já abri um chamado junto à transportadora."
-"""
-
-
-def build_store_qa_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Store Q&A agent with strict RAG grounding."""
-    brand_voice = _get_brand_voice_guidelines(tenant)
-    
-    return f"""Você é a assistente de atendimento da {tenant.name}.
-
-## BRAND VOICE
-{brand_voice}
-
-{GOLDEN_RULES}
-
-## CONTEXTO - DÚVIDAS DA LOJA
-Você está respondendo dúvidas sobre políticas e informações da {tenant.name}.
-
-## REGRAS ABSOLUTAS DE GROUNDING (NUNCA VIOLAR)
-
-1. **NUNCA INVENTE INFORMAÇÕES**
-   - Você SÓ pode usar informações do [Manual da Loja] fornecido
-   - Se a informação NÃO está no manual: "Não tenho essa informação no momento. Posso verificar com a equipe."
-   - NUNCA invente prazos, preços, políticas ou qualquer dado
-
-2. **FRASES PROIBIDAS** (só use se estiver no manual):
-   - "O prazo é de X dias"
-   - "O frete custa R$X"
-   - "Aceitamos..."
-   - "A política é..."
-
-3. **QUANDO NÃO SOUBER**:
-   - "Não tenho essa informação no momento. Posso verificar com a equipe."
-   - "Para informações mais detalhadas, nossa equipe pode ajudar melhor."
-
-## COMPORTAMENTO
-- Seja clara e objetiva
-- Se o manual tiver a resposta, use exatamente as informações dele
-- Se não tiver, admita e ofereça verificar
-"""
-
-
->>>>>>> Stashed changes
 # =============================================================================
 # CONTEXT BUILDING (Payload Construction)
 # =============================================================================
@@ -662,25 +532,17 @@ def _get_system_data_payload(
     # 4. SUPPORT DATA
     if domain == "support":
         if state.customer_email:
-<<<<<<< Updated upstream
             lines.append(f"📧 EMAIL: {state.customer_email}")
         
         # Ticket/Refund context
-        if state.soft_context.get("ticket_id"):
-            lines.append(f"🎫 TICKET CRIADO: #{state.soft_context['ticket_id']}")
+        if state.soft_context.get("ticket_id") or state.metadata.get("ticket_id"):
+            tid = state.soft_context.get("ticket_id") or state.metadata.get("ticket_id")
+            lines.append(f"🎫 TICKET CRIADO: #{tid}")
         
-        status = state.soft_context.get("order_status")
+        status = state.soft_context.get("order_status") or state.metadata.get("order_status")
         if status:
             lines.append(f"📊 STATUS PEDIDO: {status}")
-
-    # 5. KNOWLEDGE BASE (RAG)
-    if knowledge_context and "Nenhuma informação" not in knowledge_context:
-        lines.append(f"\n📚 BASE DE CONHECIMENTO (RAG):\n{knowledge_context}")
-=======
-            lines.append(f"- customer_email: {state.customer_email}")
-        ticket_id = state.metadata.get("ticket_id")
-        if ticket_id:
-            lines.append(f"- ticket_id: {ticket_id}")
+            
         if state.ticket_opened:
             lines.append("- ticket_opened: True")
 
@@ -745,13 +607,12 @@ def _get_system_data_payload(
     lines.append("Sem markdown. Sem aspas. Apenas o texto da mensagem.")
 
     # Special cases
-    if state.domain == "support" and not state.order_id and not state.customer_email:
+    if domain == "support" and not state.order_id and not state.customer_email:
         lines.append("")
         lines.append("⚠️ ATENÇÃO: Faltam dados do pedido.")
-        lines.append("- NÃO mencione prazos ou status específicos")
-        lines.append("- NÃO finja que vai verificar algo")
-        lines.append("- Apenas peça o número do pedido ou email")
->>>>>>> Stashed changes
+        lines.append("- Se o cliente estiver apenas expressando emoção, agradecimento ou expectativa (ex: 'ansioso para chegar', 'gostei muito'), responda com empatia, celebre junto e agradeça a preferência, SEM pedir o número do pedido.")
+        lines.append("- Caso ele faça uma solicitação real de status ou rastreio, aí sim peça o número do pedido ou email.")
+        lines.append("- NUNCA invente prazos ou status específicos.")
     
     # 6. MEMORY / INTENT CONTEXT
     lines.append(f"\n🧠 CONTEXTO ATUAL:")
