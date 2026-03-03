@@ -56,130 +56,81 @@ class RouterResult(BaseModel):
 # IMPROVED SYSTEM PROMPT
 # =============================================================================
 
-ROUTER_SYSTEM_PROMPT = """Você é um classificador de intenções para um assistente de vendas via WhatsApp.
+ROUTER_SYSTEM_PROMPT = """## MISSÃO
+Sua tarefa é identificar a intenção do cliente de um e-commerce no WhatsApp.
+Em vez de buscar palavras-chave, analise o MOMENTO e o OBJETIVO da jornada do usuário.
 
-## DOMAINS POSSÍVEIS
+## DOMÍNIOS E LÓGICA DE NEGÓCIO
 
-| Domain | Quando usar |
-|--------|-------------|
-| **sales** | Usuário quer comprar, buscar produtos, adicionar ao carrinho, gerar link |
-| **support** | Usuário tem dúvida sobre pedido existente, rastreio, reclamação |
-| **store_qa** | Usuário tem dúvida sobre frete, pagamento, políticas da loja |
+1. **SALES** (Foco: Conversão e Produto)
+   - O usuário está no "topo ou meio do funil".
+   - Ele quer descobrir o que existe, tirar dúvidas sobre um item (material, cor, tamanho) ou avançar para o pagamento.
+   - Pense: "O usuário quer gastar dinheiro ou saber sobre o que pode comprar?"
+   - **Regra de Ouro**: Se o contexto já é sobre um produto e o usuário faz perguntas curtas ("é de ouro?", "tem G?", "qual o preço?"), MANTENHA em SALES.
 
-## INTENTS POR DOMAIN
+2. **SUPPORT** (Foco: Pós-Venda)
+   - O usuário já tem um vínculo transacional (um pedido feito ou tentado).
+   - Ele está ansioso, reclamando ou buscando informação de algo que já "é dele".
+   - Pense: "O usuário está rastreando um valor que já saiu do bolso dele?"
+   - **Regra de Ouro**: Se mencionar status de entrega, atrasos ou defeitos, é SUPPORT.
 
-### SALES
-- **purchase_intent**: "quero comprar", "me vende", "tô interessado"
-- **product_link**: Usuário mandou URL de produto
-- **search_product**: "tem colar azul?", "quais produtos vocês têm?"
-- **select_product**: "esse mesmo", "quero esse", "o primeiro", "o número 2"
-- **select_variant**: "quero o azul", "tamanho M", "a opção 2"
-- **add_to_cart**: "adiciona no carrinho"
-- **cart_retry**: "gera de novo", "tenta de novo", "manda outro link"
-- **checkout_error**: "o link não funcionou", "não consegui pagar"
-
-### SUPPORT
-- **order_status**: "onde está meu pedido?", "já enviaram?"
-- **order_tracking**: "qual o código de rastreio?"
-- **order_complaint**: "meu pedido não chegou", "está atrasado"
-- **provide_order_id**: "meu pedido é 12345", ou apenas um número
-- **provide_email**: "meu email é fulano@exemplo.com"
-
-### STORE_QA
-- **store_question**: "qual o horário?", "onde fica a loja?"
-- **shipping_question**: "quanto é o frete?", "entrega em quanto tempo?"
-- **payment_question**: "aceita pix?", "posso parcelar?"
-- **return_exchange**: "posso trocar?", "qual a política de devolução?"
-
-### GENÉRICOS
-- **greeting**: "oi", "olá", "bom dia"
-- **general**: Qualquer outra coisa
-- **media_unsupported**: [AUDIO], [IMAGE], [VIDEO]
+3. **STORE_QA** (Foco: Institucional)
+   - Dúvidas genéricas que não dependem do catálogo de produtos nem de um CPF/Pedido.
+   - Perguntas sobre regras da empresa (horário, política de troca, localização).
+   - Pense: "Isso é uma regra da empresa ou uma dúvida sobre um objeto específico?"
+   - **⚠️ ATENÇÃO**: Perguntas sobre "produtos", "catálogo", "o que vocês vendem", "quais produtos têm" são SALES (search_product), NÃO store_qa!
 
 ---
 
-## REGRAS CRÍTICAS DE CLASSIFICAÇÃO
+## INTENTS (Referência Técnica)
 
-### Prioridade 1: Detecção de Pedido
-```
-SE mensagem contém número de 3-8 dígitos + palavras como "pedido", "rastreio", "entrega"
-   → domain=support, intent=order_status ou order_complaint
-   → entities.order_id = número encontrado
-```
+### SALES GRUPO (Priorize se cliente já está discutindo produto)
+- **purchase_intent**: SINAL DE COMPRA! Exemplos: "quero comprar", "bora fechar", "vou levar", "quero esse", "quero garantir", "pode mandar o link", "me manda", "sim, quero", "fecha", "bora", "aceito", "tô dentro", "manda o pix"
+  → Se cliente CONFIRMOU interesse ("quero", "sim", "bora") após ver produto = purchase_intent
+- **product_link**: URL de produto
+- **search_product**: Busca de itens, catálogo, perguntas sobre "o que vocês têm", "quais produtos", "me mostra", "quero ver produtos" ou especificidades de um produto (cor, material, tamanho). Também: "produtos da loja", "o que vendem", "catálogo"
+- **select_product**: Escolha entre opções ("o primeiro", "esse")
+- **select_variant**: Escolha de variação ("azul", "tamanho M")
+- **add_to_cart**: Adicionar ao carrinho
+- **cart_retry**: Pedir link novamente
+- **checkout_error**: Erro no pagamento
+- **greeting**: Oi, Olá (Início de conversa = Venda)
+- **general**: Conversa fiada (Manter engajamento = Venda)
 
-### Prioridade 2: Apenas Número
-```
-SE mensagem é APENAS um número (ex: "12345")
-   → domain=support, intent=provide_order_id
-   → entities.order_id = número
-```
+### SUPPORT GRUPO
+- **order_status**: Rastreio, onde está
+- **order_tracking**: Pedir código
+- **order_complaint**: Reclamação de atraso/defeito
+- **provide_order_id**: Número do pedido
+- **provide_email**: Email do cliente
 
-### Prioridade 3: URL de Produto
-```
-SE mensagem contém URL de produto
-   → domain=sales, intent=product_link
-   → entities.product_url = URL
-```
-
-### Prioridade 4: Contexto de Produtos Selecionados
-```
-SE context.has_selected_products=True E mensagem pergunta sobre detalhes do produto
-   (materiais, cores, tamanhos, preço, disponibilidade)
-   → domain=sales (MANTER no fluxo de vendas)
-   → NÃO mudar para store_qa
-```
-
-### Prioridade 5: Seleção/Confirmação
-```
-SE mensagem é confirmação ("sim", "esse", "quero", "pode", "ok", "esse mesmo")
-   E context tem produtos ou variantes sendo discutidos
-   → domain=sales, intent=select_product ou select_variant
-```
-
-### Prioridade 6: Retry/Erro
-```
-SE mensagem indica retry ("de novo", "outro link", "não funcionou")
-   → domain=sales, intent=cart_retry ou checkout_error
-```
+### STORE_QA GRUPO
+- **store_question**: Horários, endereço
+- **shipping_question**: Frete geral (não de pedido específico)
+- **payment_question**: Formas de pagamento
+- **return_exchange**: Regras de devolução
+- **media_unsupported**: Arquivos de mídia
 
 ---
 
 ## ENTIDADES A EXTRAIR
-
-| Entity | Pattern | Exemplo |
-|--------|---------|---------|
-| order_id | 3-8 dígitos | "12345" |
-| email | email válido | "user@email.com" |
-| product_url | URL com /products/ | "https://loja.com/products/colar" |
-| search_query | palavras-chave | "colar azul" de "quero um colar azul" |
-| tracking_complaint_days | X dias | "10" de "faz 10 dias" |
+- `order_id`: Sequência numérica (3-8 dígitos)
+- `email`: Formato de email
+- `product_url`: Links da loja
+- `search_query`: O termo de busca (ex: "colar de ouro" em "quero um colar de ouro")
 
 ---
 
-## NÍVEIS DE CONFIDENCE
-
-- **0.90+**: Muito claro, sem ambiguidade
-- **0.75-0.89**: Claro, mas poderia ter interpretações
-- **0.60-0.74**: Ambíguo (set ambiguous=true)
-- **<0.60**: Muito incerto (fallback para store_qa/general)
-
----
-
-## OUTPUT FORMAT
-
-Retorne APENAS JSON válido:
+## OUTPUT FORMAT (JSON Obrigatório)
+Retorne APENAS JSON válido, sem markdown:
 {
   "domain": "sales|support|store_qa",
   "intent": "<intent_name>",
   "confidence": 0.0-1.0,
   "ambiguous": true|false,
-  "top_intents": [{"intent": "...", "confidence": 0.X}, ...],
-  "entities": {"order_id": "...", "email": "...", "product_url": "...", "search_query": "..."},
-  "rationale": "Breve explicação para debug"
+  "entities": {"..."},
+  "rationale": "Explique o raciocínio: 'Usuário está no meio do funil perguntando sobre material...'"
 }
-
-NUNCA adicione texto fora do JSON.
-NUNCA invente intents que não estão na lista.
 """
 
 
@@ -405,6 +356,51 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
             ambiguous=False,
             entities={"product_url": url_match.group(0)},
             rationale="Product URL detected",
+        )
+    
+    # ==========================================================================
+    # CRITICAL: Simple confirmation with product context → purchase_intent
+    # When user says "sim", "quero", "bora", etc. AND there are selected products,
+    # this is a PURCHASE CONFIRMATION. Skip LLM and route directly to generate link.
+    # ==========================================================================
+    confirmation_patterns = [
+        r'^(sim|quero|esse|pode|ok|beleza|bora|yes|manda|claro|aceito|isso|fechou?|vou levar|quero esse|pode ser|manda o link|gera o link|me manda|por favor|pfv|pf)\W*$',
+        r'^(sim|quero),?\s*(por favor|pfv|pode)?\W*$',
+        r'^gera\s*(o link|pra mim)?\W*$',
+        r'^manda\s*(o link|pra mim|ai)?\W*$',
+    ]
+    
+    has_products = context and context.get("has_selected_products")
+    
+    for pattern in confirmation_patterns:
+        if re.match(pattern, msg_lower, re.IGNORECASE):
+            if has_products:
+                return RouterResult(
+                    domain="sales",
+                    intent="purchase_intent",
+                    confidence=0.98,
+                    ambiguous=False,
+                    rationale="Simple confirmation with product context → purchase",
+                )
+    
+    # ==========================================================================
+    # Link request with product name ("gere o link do silver threader")
+    # When products are already selected and user requests a link for a specific
+    # product, classify as purchase_intent to avoid LLM misclassifying as search.
+    # ==========================================================================
+    link_request_patterns = [
+        r'(?:ger[ea]|manda|quero|envia)\s+(?:o\s+)?link',   # "gere o link", "manda o link"
+        r'link\s+(?:do|da|de|para)\s+',                      # "link do...", "link da..."  
+        r'quero\s+(?:o\s+)?(?:do|da|de)\s+',                 # "quero o do..."
+        r'(?:ger[ea]|manda)\s+(?:do|da|de)\s+',              # "gere do silver threader"
+    ]
+    if has_products and any(re.search(p, msg_lower) for p in link_request_patterns):
+        return RouterResult(
+            domain="sales",
+            intent="purchase_intent",
+            confidence=0.95,
+            ambiguous=False,
+            rationale="Link request with product context → purchase_intent",
         )
     
     # No obvious pattern, use LLM

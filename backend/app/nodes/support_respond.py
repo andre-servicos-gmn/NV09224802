@@ -34,16 +34,16 @@ def support_respond(state: ConversationState, tenant: TenantConfig) -> Conversat
         response = _ensure_link_once(response, state.tracking_url)
 
         state.last_bot_message = response
-        state.metadata["response_model"] = get_model_name()
+        state.soft_context["response_model"] = get_model_name()
         return state
 
     except Exception as exc:
-        state.metadata["response_error"] = str(exc)
+        state.soft_context["response_error"] = str(exc)
         return _fallback_response(state)
 
 
 def _fallback_response(state: ConversationState) -> ConversationState:
     """Fallback response when LLM fails."""
     state.last_bot_message = "Desculpe, tive um problema tecnico. Pode repetir?"
-    state.metadata["response_model"] = "fallback"
+    state.soft_context["response_model"] = "fallback"
     return state

@@ -1,0 +1,3 @@
+cadê meu pedido 9999
+[pedido não encontrado]
+[agente pede confirmação dos dados e oferece ticket]

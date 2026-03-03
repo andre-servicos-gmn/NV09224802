@@ -1,0 +1,3 @@
+onde está meu pedido?
+[sistema identifica por telefone automaticamente — nenhuma pergunta ao cliente]
+[agente retorna: "Oi! Seu pedido #1001 já saiu para entrega hoje. Código de rastreio: BR123456789. Deve chegar até hoje à tarde!"]

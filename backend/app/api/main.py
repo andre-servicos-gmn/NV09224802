@@ -143,6 +143,8 @@ app.include_router(conversations_router)
 async def test_post():
     return {"status": "ok"}
 
+
+
 # Root endpoint
 @app.get("/", summary="API root")
 async def root():
@@ -161,6 +163,13 @@ async def health():
     """Global health check endpoint."""
     return {"status": "healthy"}
 
+from app.core.session_store_v2 import get_redis_health
+
+@app.get('/health/redis')
+async def redis_health():
+    """Health check para Redis — útil para monitorar o Fase 2."""
+    return get_redis_health()
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -174,3 +183,11 @@ if __name__ == "__main__":
         port=port,
         reload=debug,
     )
+
+
+
+
+
+
+
+

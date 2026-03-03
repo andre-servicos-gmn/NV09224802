@@ -49,6 +49,14 @@ def _search_with_rag(
         
         logger.info(f"[RAG] get_products_for_state returned {len(results) if results else 0} results")
         
+        # Filter out-of-stock products
+        if results:
+            in_stock_results = [p for p in results if p.get("in_stock", True)]
+            removed = len(results) - len(in_stock_results)
+            if removed > 0:
+                logger.info(f"[RAG] Filtered out {removed} out-of-stock products")
+            results = in_stock_results
+        
         if results:
             for i, p in enumerate(results[:3]):
                 logger.info(f"[RAG]   Result {i+1}: {p.get('title', 'N/A')} (in_stock={p.get('in_stock')})")
@@ -108,24 +116,28 @@ def action_search_products(
     import requests
     
     try:
-        # Limpar contexto de outros dominios
-        state.metadata.pop("tracking_url", None)
-        state.metadata.pop("order_id", None)
-        state.metadata.pop("ticket_id", None)
-        state.metadata.pop("order_status", None)
+        # Limpar contexto de outros dominios - No longer needed as they are top-level or handled by router
+        state.tracking_url = None
+        state.order_id = None
+        # ticket_id and order_status were in metadata, now maybe in soft_context or explicit fields if added. 
+        # For now, just clearing top-level fields is safer.
+
 
         query = (state.search_query or state.last_user_message or "").strip()
         state.search_query = query or None
-        state.metadata["search_query"] = query or None
+        state.soft_context["search_query"] = query or None
         state.selected_products = []
         state.available_variants = []
-        state.selected_product_id = None
-        state.selected_variant_id = None
-        state.metadata["search_results_count"] = 0
+        # Removed: state.selected_product_id = None
+        # Removed: state.selected_variant_id = None
+        state.soft_context["focused_product_id"] = None
+        state.soft_context["selected_variant_id"] = None
+        state.soft_context["search_results_count"] = 0
+
 
         if not query:
             state.last_action_success = False
-            state.metadata["search_error"] = "missing_search_query"
+            state.soft_context["search_error"] = "missing_search_query"
             state.bump_frustration()
         else:
             import logging
@@ -143,10 +155,18 @@ def action_search_products(
                 results = _search_with_rest_api(tenant, query, limit=5)
                 search_method = "rest_api"
                 logger.info(f"[SEARCH] REST API returned {len(results)} results")
+                
+                # Filter out-of-stock from REST API results too
+                if results:
+                    in_stock_results = [p for p in results if p.get("in_stock", True)]
+                    removed = len(results) - len(in_stock_results)
+                    if removed > 0:
+                        logger.info(f"[SEARCH] Filtered out {removed} out-of-stock products from REST API")
+                    results = in_stock_results
             
             state.selected_products = results
-            state.metadata["search_results_count"] = len(results)
-            state.metadata["search_method"] = search_method
+            state.soft_context["search_results_count"] = len(results)
+            state.soft_context["search_method"] = search_method
             
             # Check for variants in the top result
             # We assume the first result is the most relevant one
@@ -155,20 +175,21 @@ def action_search_products(
                 # This allows specific queries like "colar summer" to immediately show variants
                 product = results[0]
                 if product.get("has_variants") and product.get("variants"):
-                    state.selected_product_id = product.get("product_id")
+                    state.soft_context["focused_product_id"] = product.get("product_id")
                     
                     # Transform variants to simplified format for state
-                    state.available_variants = [
+                    # Only include IN-STOCK variants
+                    all_variants = [
                         {
                             "id": str(v.get("id")),
                             "title": v.get("title", ""),
                             "price": str(v.get("price", "")),
-                            # Check inventory > 0 but keep all for display
                             "available": int(v.get("inventory_quantity", 0)) > 0,
                             "inventory_quantity": int(v.get("inventory_quantity", 0))
                         }
                         for v in product.get("variants", [])
                     ]
+                    state.available_variants = [v for v in all_variants if v["available"]]
                     logger.info(f"[SEARCH] Auto-selected focus on product {product.get('title')} with {len(state.available_variants)} variants")
             
             if os.getenv("DEBUG"):
@@ -176,33 +197,72 @@ def action_search_products(
             
             if not results:
                 state.last_action_success = False
-                state.metadata["search_error"] = "no_results"
+                state.soft_context["search_error"] = "no_results"
                 state.bump_frustration()
             else:
                 state.last_action_success = True
-                state.metadata.pop("search_error", None)
+                if "search_error" in state.soft_context:
+                    del state.soft_context["search_error"]
 
     except requests.Timeout:
         state.last_action_success = False
-        state.metadata["search_error"] = "timeout"
+        state.system_error = "timeout"
+        state.soft_context["search_error"] = "timeout"
         state.selected_products = []
         state.bump_frustration()
 
     except requests.HTTPError as exc:
         state.last_action_success = False
         if exc.response.status_code == 429:
-            state.metadata["search_error"] = "rate_limit"
+            state.system_error = "rate_limit"
+            state.soft_context["search_error"] = "rate_limit"
         else:
-            state.metadata["search_error"] = str(exc)
+            state.system_error = str(exc)
+            state.soft_context["search_error"] = str(exc)
         state.selected_products = []
         state.bump_frustration()
 
     except Exception as exc:
         state.last_action_success = False
-        state.metadata["search_error"] = str(exc)
+        state.system_error = str(exc)
+        state.soft_context["search_error"] = str(exc)
         state.selected_products = []
         state.bump_frustration()
 
     state.last_action = "search_products"
-    state.next_step = "respond"
+    
+    # ==========================================================================
+    # ACTION CHAINING: Atalho de Compra
+    # Se busca retornou 1 produto específico E usuário quer comprar → gera link
+    # ==========================================================================
+    from app.core.constants import INTENT_PURCHASE_INTENT, INTENT_ADD_TO_CART
+    
+    if (state.last_action_success 
+        and state.selected_products 
+        and len(state.selected_products) == 1
+        and state.intent in [INTENT_PURCHASE_INTENT, INTENT_ADD_TO_CART]):
+        
+        product = state.selected_products[0]
+        variants = product.get("variants") or []
+        
+        # Se só tem 1 variante (ou nenhuma), auto-seleciona e vai direto pro link
+        if len(variants) <= 1:
+            if len(variants) == 1:
+                state.soft_context["selected_variant_id"] = str(variants[0].get("id"))
+                state.soft_context["selected_variant_title"] = variants[0].get("title", "Default")
+            else:
+                # Nenhuma variante = usa product_id como variant_id (Shopify default)
+                state.soft_context["selected_variant_id"] = str(product.get("product_id") or product.get("id"))
+                state.soft_context["selected_variant_title"] = product.get("title", "")
+            
+            logger.info(f"[SEARCH] ACTION CHAINING: 1 produto + purchase_intent → direct to generate_link")
+            state.next_step = "action_generate_link"
+            return state
+        
+        # Múltiplas variantes - precisa perguntar ao usuário
+        logger.info(f"[SEARCH] Produto único com {len(variants)} variantes - precisa seleção")
+        state.next_step = "respond"
+    else:
+        state.next_step = "respond"
+    
     return state

@@ -1,66 +1,112 @@
-# Modified: add search/products/variants/cart fields for sales flow.
 from pydantic import BaseModel, Field
-
+from typing import List, Dict, Optional
 
 class ConversationState(BaseModel):
+    # --- IDENTIFICAÇÃO ---
     tenant_id: str
     session_id: str
     personality_id: str = "professional"
     channel: str = "whatsapp"
-    domain: str | None = None
-    intent: str = "general"
-    search_query: str | None = None
-    selected_products: list[dict] = Field(default_factory=list)
-    selected_product_id: str | None = None
-    available_variants: list[dict] = Field(default_factory=list)
-    selected_variant_id: str | None = None
-    cart_items: list[dict] = Field(default_factory=list)
-    quantity: int = 1
-    order_id: str | None = None
-    customer_email: str | None = None
-    tracking_url: str | None = None
-    tracking_last_update_days: int | None = None
-    ticket_opened: bool = False
-    last_action: str | None = None
-    last_strategy: str | None = None
-    last_action_success: bool | None = None  # None = no action ran yet
+    
+    # --- CÉREBRO E INTENÇÃO ---
+    domain: Optional[str] = None          # sales | support | store_qa
+    intent: str = "general"               # checkout_error, search_product, etc.
+    confidence_score: float = 0.0         # 0.0 a 1.0 (Para decidir Handoff)
+    
+    # --- MEMÓRIA DE VENDAS (SALES CONTEXT) ---
+    search_query: Optional[str] = None
+    selected_products: List[dict] = Field(default_factory=list)
+    available_variants: List[dict] = Field(default_factory=list)
+    cart_items: List[dict] = Field(default_factory=list)
+    
+    # [NOVO] O Link Sagrado - Diferente de tracking_url!
+    checkout_link: Optional[str] = None   
+    
+    # --- MEMÓRIA DE SUPORTE (SUPPORT CONTEXT) ---
+    order_id: Optional[str] = None
+    customer_email: Optional[str] = None
+    tracking_url: Optional[str] = None    # Link dos Correios/Loggi
+    refund_status: Optional[str] = None   # [NOVO] Para o agente saber se foi aprovado
+    original_complaint: Optional[str] = None
+    
+    # --- MEMÓRIA COGNITIVA (A Mágica Nova) ---
+    # Fatos Rígidos (CPF, CEP, IDs) - O que o prompt de memória extrai como 'hard_facts'
+    facts: Dict = Field(default_factory=dict) 
+    
+    # [NOVO] Contexto Suave (Motivação, Urgência) - O que o prompt de memória extrai como 'soft_context'
+    soft_context: Dict = Field(default_factory=dict) 
+    
+    # [NOVO] O que falta para fechar a ação (Ex: ["tamanho", "cor"])
+    blocking_info: List[str] = Field(default_factory=list)
+    
+    # [NOVO] Texto recuperado do RAG (Supabase) para o Humanizer ler
+    rag_context: Optional[str] = None 
+    
+    # --- ESTADO EMOCIONAL E CONTROLE ---
     frustration_level: int = 0
-    sentiment_level: str = "calm"
-    sentiment_score: float = 0.0
+    sentiment_level: str = "calm"         # calm | frustrated | angry
+    sentiment_score: float = 0.0          # -1.0 (Fúria) a 1.0 (Amor)
     needs_handoff: bool = False
-    handoff_reason: str | None = None
-    last_user_message: str | None = None
-    last_bot_message: str | None = None
-    next_step: str | None = None
-    metadata: dict = Field(default_factory=dict)
-    # Conversation memory for personalized context
-    conversation_history: list[dict] = Field(default_factory=list)
-    original_complaint: str | None = None  # Stores the original issue for context
+    handoff_reason: Optional[str] = None
+    needs_resolution: bool = False
+    missing_info_needed: List[str] = Field(default_factory=list)
+    repeat_count: int = 0
     
-    needs_resolution: bool = False  # If true, agent detected issue is resolved
+    # --- FLUXO DE MENSAGEM ---
+    last_user_message: Optional[str] = None
+    last_bot_message: Optional[str] = None
     
-    # Short-term memory for Store Q&A (human touch)
-    conversation_summary: str | None = None  # 2-6 lines summary
-    facts: dict = Field(default_factory=dict)  # order_id, email, nome, cep, produto, problema, pagamento, data_compra, urgencia
-    missing_info_needed: list[str] = Field(default_factory=list)  # What info we still need
-    repeat_count: int = 0  # Avoid repeating same question
+    # [NOVO] Erro técnico do sistema (Ex: "API Checkout Timeout"). 
+    # Diferente de erro do usuário. O Humanizer usa isso para pedir desculpas.
+    system_error: Optional[str] = None    
+    
+    # --- FLUXO DO GRAFO (Graph Flow) ---
+    next_step: Optional[str] = None         # Para decidir qual nó executar
+    last_action: Optional[str] = None       # Último nó/ação executada
+    last_strategy: Optional[str] = None     # Estratégia atual (ex: "permalink", "add_to_cart")
+    
+    last_action_success: Optional[bool] = None
+    
+    # --- CAMPOS LEGADOS (Para retrocompatibilidade) ---
+    tracking_last_update_days: Optional[int] = None  # Usado em router.py
+    
+    # Histórico para o LLM (Janela deslizante)
+    conversation_history: List[dict] = Field(default_factory=list)
+
+    # --- MÉTODOS UTILITÁRIOS ---
+
+    # WISMO fields (adicionar ao state.py)
+    customer_phone: str | None = None        # Telefone extraído do WhatsApp
+    order_status: str | None = None          # Status humanizado do pedido
+    tracking_code: str | None = None         # Código de rastreio bruto (ex: BR123456789)
+    tracking_last_event: str | None = None   # Última movimentação logística
+    estimated_delivery: str | None = None    # Data estimada de entrega (se disponível)
+    wismo_lookup_done: bool = False          # Flag: já tentamos buscar o pedido nessa sessão
+    wismo_identified_by: str | None = None  # "phone" | "email" | "order_id"
 
     def bump_frustration(self) -> None:
         self.frustration_level += 1
 
-
-    def set_intent(self, intent: str) -> None:
-        self.intent = intent
-
     def add_to_history(self, role: str, message: str) -> None:
-        """Add a message to conversation history (store 20, use 10 for context)."""
+        """Adiciona mensagem e mantém a janela de contexto limpa (últimas 20)."""
         self.conversation_history.append({"role": role, "message": message})
-        # Keep last 20 messages in storage, 10 used for LLM context
         if len(self.conversation_history) > 20:
             self.conversation_history = self.conversation_history[-20:]
-        # Capture original complaint for persistent context
+            
+        # Captura de reclamação persistente (Lógica mantida, é boa)
         if role == "user" and not self.original_complaint:
-            if any(w in message.lower() for w in ["errado", "problema", "reclamação", "atrasado", "não chegou", "defeito"]):
+            keywords = ["errado", "problema", "reclamação", "atrasado", "não chegou", "defeito", "quebrado"]
+            if any(w in message.lower() for w in keywords):
                 self.original_complaint = message
 
+    def clear_rag_context(self):
+        """Limpa o contexto RAG para não contaminar a próxima resposta"""
+        self.rag_context = None
 
+    def set_intent(self, intent: str) -> None:
+        """Define a intenção e limpa estados incompatíveis se necessário."""
+        self.intent = intent
+        # Se mudar para uma intenção que não seja de suporte, podemos limpar erros antigos de pedido
+        if intent not in ["order_status", "order_tracking", "order_complaint"]:
+             if "order_error" in self.soft_context:
+                 del self.soft_context["order_error"]

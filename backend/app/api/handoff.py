@@ -140,19 +140,18 @@ async def close_conversation(request: CloseRequest):
             "intent": "general",
             "cart_items": [],
             "selected_products": [],
-            "selected_product_id": None,
-            "selected_variant_id": None,
-            "quantity": 1,
+            "checkout_link": None,
+            "soft_context": {},
+            "blocking_info": [],
+            "rag_context": None,
             "order_id": None,
-            "ticket_opened": False,
             "last_action": None,
             "last_strategy": None,
             "frustration_level": 0,
             "needs_handoff": False,
             "handoff_reason": None,
             # Maintain long-term memory
-            "conversation_history": [],  # Or keep last few? Usually reset is better for fresh start
-            "conversation_summary": conv.data.get("state", {}).get("conversation_summary"),
+            "conversation_history": [],
             "facts": conv.data.get("state", {}).get("facts", {})
         }
 
