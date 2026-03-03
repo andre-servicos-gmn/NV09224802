@@ -11,11 +11,8 @@ class ConversationState(BaseModel):
     intent: str = "general"
     search_query: str | None = None
     selected_products: list[dict] = Field(default_factory=list)
-    selected_product_id: str | None = None
-    available_variants: list[dict] = Field(default_factory=list)
     selected_variant_id: str | None = None
-    cart_items: list[dict] = Field(default_factory=list)
-    quantity: int = 1
+    available_variants: list[dict] = Field(default_factory=list)
     order_id: str | None = None
     customer_email: str | None = None
     tracking_url: str | None = None
@@ -55,9 +52,8 @@ class ConversationState(BaseModel):
     def add_to_history(self, role: str, message: str) -> None:
         """Add a message to conversation history (store 20, use 10 for context)."""
         self.conversation_history.append({"role": role, "message": message})
-        # Keep last 20 messages in storage, 10 used for LLM context
-        if len(self.conversation_history) > 20:
-            self.conversation_history = self.conversation_history[-20:]
+        # O usuário solicitou que o histórico completo da conversa seja mantido e compartilhado até o fim.
+        pass
         # Capture original complaint for persistent context
         if role == "user" and not self.original_complaint:
             if any(w in message.lower() for w in ["errado", "problema", "reclamação", "atrasado", "não chegou", "defeito"]):

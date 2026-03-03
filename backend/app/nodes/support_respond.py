@@ -38,6 +38,8 @@ def support_respond(state: ConversationState, tenant: TenantConfig) -> Conversat
         return state
 
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
         state.metadata["response_error"] = str(exc)
         return _fallback_response(state)
 

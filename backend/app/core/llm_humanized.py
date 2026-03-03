@@ -304,47 +304,6 @@ REGRAS: {voice_key}
     return BRAND_VOICE_MAP["profissional"]
 
 
-def build_sales_prompt(tenant: TenantConfig) -> str:
-    """Build system prompt for Sales agent."""
-    brand_voice = _get_brand_voice_guidelines(tenant)
-    
-    return f"""Você é a assistente de vendas da {tenant.name}.
-
-## BRAND VOICE
-{brand_voice}
-
-{GOLDEN_RULES}
-
-## CONTEXTO - VENDAS
-Você está ajudando clientes a comprar produtos da {tenant.name}.
-
-## COMPORTAMENTO
-- Seja solícita ao apresentar produtos
-- Forneça o link de checkout de forma clara
-- Se houver erro no link, informe e ofereça nova tentativa
-- Se não tiver link, pergunte qual produto o cliente deseja
-
-## GROUNDING RULES (DADOS CRÍTICOS)
-- Se selected_products existe → liste EXATAMENTE os produtos fornecidos
-- Use os TÍTULOS e PREÇOS exatos dos dados
-- Numere os produtos: 1, 2, 3...
-- NUNCA invente produtos ou preços
-- Se available_variants existe → liste EXATAMENTE as variantes com títulos e preços
-- Se checkout_link existe → inclua a URL EXATA no FINAL da mensagem
-- Se last_action_success = False → reconheça o erro com empatia
-- NUNCA invente URLs, IDs ou valores monetários
-
-## EXEMPLOS
-"Encontrei o produto que você procurava! Quer que eu gere o link?"
-"Pronto, aqui está o link: [link]"
-"Ops, esse link deu problema. Vou gerar outro, um momento."
-
-## REGRA ESPECIAL PARA LINKS
-Se last_action = "action_generate_link" e last_action_success = True:
-- O link JÁ foi gerado e está sendo enviado junto com sua mensagem
-- NÃO pergunte "quer que eu gere o link?"
-- APENAS confirme de forma natural: "Aqui está!" ou "Pronto! 😊"
-"""
 
 
 def build_support_prompt(tenant: TenantConfig) -> str:
@@ -494,7 +453,7 @@ def _build_context_prompt(
     # Conversation history
     if state.conversation_history:
         lines.append("[Histórico da Conversa]")
-        for entry in state.conversation_history[-6:]:
+        for entry in state.conversation_history:
             role = "👤 Cliente" if entry["role"] == "user" else "🤖 Você"
             message = entry.get("message", entry.get("content", ""))
             lines.append(f"{role}: {message}")
@@ -519,7 +478,7 @@ def _build_context_prompt(
         lines.append("")
 
     # Critical data
-    current_domain = state.domain or "sales"
+    current_domain = state.domain or "store_qa"
     lines.append("[DADOS CRÍTICOS - use EXATAMENTE como fornecidos]")
     
     checkout_link = state.metadata.get("checkout_link")
@@ -615,13 +574,7 @@ def _build_context_prompt(
         lines.append(f"- errors: {error_details}")
 
     # Domain-specific data
-    if current_domain == "sales":
-        search_query = state.search_query or state.metadata.get("search_query")
-        if search_query:
-            lines.append(f"- search_query: {search_query}")
-        if state.metadata.get("out_of_stock"):
-            lines.append("- out_of_stock: True")
-    elif current_domain == "support":
+    if current_domain == "support":
         if state.customer_email:
             lines.append(f"- customer_email: {state.customer_email}")
         ticket_id = state.metadata.get("ticket_id")
@@ -659,9 +612,9 @@ def _build_context_prompt(
     if state.domain == "support" and not state.order_id and not state.customer_email:
         lines.append("")
         lines.append("⚠️ ATENÇÃO: Faltam dados do pedido.")
-        lines.append("- NÃO mencione prazos ou status específicos")
-        lines.append("- NÃO finja que vai verificar algo")
-        lines.append("- Apenas peça o número do pedido ou email")
+        lines.append("- Se o cliente estiver apenas expressando emoção, agradecimento ou expectativa (ex: 'ansioso para chegar', 'gostei muito'), responda com empatia, celebre junto e agradeça a preferência, SEM pedir o número do pedido.")
+        lines.append("- Caso ele faça uma solicitação real de status ou rastreio, aí sim peça o número do pedido ou email.")
+        lines.append("- NUNCA invente prazos ou status específicos.")
     
     if state.domain == "support" and state.last_action and state.last_action_success is False:
         lines.append("")
@@ -714,9 +667,7 @@ def generate_humanized_response(
         print(f"[RAG] Knowledge context (first 300 chars): {knowledge_context[:300]}...")
     
     # Select system prompt based on domain
-    if domain == "sales":
-        system_prompt = build_sales_prompt(tenant)
-    elif domain == "support":
+    if domain == "support":
         system_prompt = build_support_prompt(tenant)
     else:
         system_prompt = build_store_qa_prompt(tenant)
@@ -751,11 +702,7 @@ def generate_humanized_response(
         response = response[1:-1]
     
     # Ensure important links are included
-    if domain == "sales":
-        checkout_link = state.metadata.get("checkout_link")
-        if checkout_link and checkout_link not in response:
-            response = f"{response}\n\n{checkout_link}"
-    elif domain == "support":
+    if domain == "support":
         tracking_url = state.tracking_url
         if tracking_url and tracking_url not in response:
             response = f"{response}\n\n{tracking_url}"
