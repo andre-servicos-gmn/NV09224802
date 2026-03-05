@@ -315,7 +315,6 @@ Estas regras existem pra te proteger e proteger o cliente:
 
 4. **Sobre materiais e atributos:** Se o cliente perguntar algo que NÃO está na descrição do produto (ex: "é antialérgico?"), diga honestamente: "Essa informação não tá na descrição do produto, mas posso verificar com a equipe pra você!". NUNCA invente atributos — pode causar problemas reais.
 
-5. **Link de checkout:** Se NÃO existe link no contexto, NUNCA finja que tem. Diga algo natural como "Quer que eu gere o link pra você?" e o sistema gera na próxima interação.
 
 ---
 
@@ -333,8 +332,6 @@ Dados do Sistema:
 
 Leia a última mensagem do cliente com atenção. Responda EXATAMENTE ao que ele disse, não ao que você acha que ele deveria ter dito.
 
-Se tem link de checkout → apresente de forma natural e clara, sem template robótico.
-Se NÃO tem link mas o cliente quer comprar → ofereça gerar.
 Se o cliente tem um problema → ajude com o problema específico.
 Se o cliente só tá conversando → converse.
 
@@ -417,7 +414,7 @@ def _get_system_data_payload(
     if state.last_action:
         status_icon = "✅" if state.last_action_success else "⚠️"
         lines.append(f"LAST_ACTION: {state.last_action} ({status_icon} Success: {state.last_action_success})")
-        if not state.last_action_success:
+        if state.last_action_success is False:
             lines.append("   → ERRO: A última ação falhou. Explique o problema e ofereça alternativa.")
             # Add error details
             if state.system_error:
@@ -428,18 +425,7 @@ def _get_system_data_payload(
                     lines.append(f"   → DEBUG INFO: {k}={v}")
 
     # 2. CRITICAL LINKS & IDs
-    if state.checkout_link:
-        # Intent-aware: Don't tell LLM to "send the link" if user is reporting errors
-        if state.intent in ("checkout_error",):
-            lines.append(f"\n🔗 LINK DE CHECKOUT (Já enviado ao cliente): {state.checkout_link}")
-            lines.append("   ⚠️ O cliente JÁ TEM este link e está relatando PROBLEMAS.")
-            lines.append("   → NÃO reenvie o link. Leia a mensagem do cliente e responda ao problema ESPECÍFICO dele.")
-            lines.append("   → Responda com base no que o cliente disse, não repita respostas anteriores.")
-        else:
-            lines.append(f"\n🔗 CHECKOUT_LINK (SAGRADO - Envie exatamente): {state.checkout_link}")
-            # Tip for the model
-            if state.last_action == "action_generate_link" and state.last_action_success:
-                 lines.append("   (O link acabou de ser gerado. Envie-o agora!)")
+
 
     if state.tracking_url:
         lines.append(f"\n🚚 TRACKING_URL: {state.tracking_url}")
@@ -453,35 +439,10 @@ def _get_system_data_payload(
         focused_product_id = state.soft_context.get("focused_product_id")
         selected_variant_id = state.soft_context.get("selected_variant_id")
         
-        # PRIORITY 1: Checkout link exists - show only the carted product
-        if state.checkout_link and state.selected_products:
-            focused_product = None
-            
-            if selected_variant_id:
-                for p in state.selected_products:
-                    for v in p.get("variants") or []:
-                        if str(v.get("id")) == str(selected_variant_id):
-                            focused_product = p
-                            break
-                    if focused_product:
-                        break
-            
-            if not focused_product and state.selected_products:
-                focused_product = state.selected_products[0]
-            
-            if focused_product:
-                title = focused_product.get("title", "Produto")
-                price = _format_price(focused_product.get("price"))
-                lines.append(f"\n🛒 PRODUTO NO CARRINHO: {title} - {price}")
-                v_title = state.soft_context.get("selected_variant_title")
-                if v_title:
-                    lines.append(f"   → Variante: {v_title}")
-                lines.append("   (Checkout link já gerado. NÃO liste outros produtos.)")
-        
-        # PRIORITY 2: focused_product_id set - User is asking about a SPECIFIC product
+        # PRIORITY 1: focused_product_id set - User is asking about a SPECIFIC product
         # Show ONLY that product with FULL DESCRIPTION for grounding
-        elif focused_product_id and state.selected_products:
-            focused_product = None
+        focused_product = None
+        if focused_product_id and state.selected_products:
             for p in state.selected_products:
                 if str(p.get("product_id") or p.get("id")) == str(focused_product_id):
                     focused_product = p
@@ -514,7 +475,7 @@ def _get_system_data_payload(
                 lines.append("\n   (NÃO liste outros produtos. Foque neste.)")
         
         # PRIORITY 3: No focus - Vitrine mode - show list for selection
-        elif state.selected_products:
+        if not focused_product and state.selected_products:
             lines.append("\n🛒 PRODUTOS ENCONTRADOS (Vitrine):")
             for idx, p in enumerate(state.selected_products, 1):
                 title = p.get("title", "Produto")
@@ -699,15 +660,6 @@ def generate_humanized_response(
     if response.startswith('"') and response.endswith('"'):
         response = response[1:-1]
     
-    # Safety Net: Ensure link is present if we just generated it
-    # But NOT for checkout_error or other non-purchase intents
-    checkout_link = state.checkout_link
-    non_link_intents = {"checkout_error", "greeting", "general", "order_status", "order_complaint"}
-    if (domain == "sales" 
-        and checkout_link 
-        and checkout_link not in response
-        and state.intent not in non_link_intents):
-        if state.last_action == "action_generate_link":
-            response += f"\n\n{checkout_link}"
+
     
     return response

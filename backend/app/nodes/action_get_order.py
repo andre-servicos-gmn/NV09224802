@@ -203,19 +203,8 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         api_version=tenant.shopify_api_version,
     )
 
-<<<<<<< Updated upstream
-    try:
-        # Limpar contexto de outros dominios
-        if "checkout_link" in state.soft_context:
-            del state.soft_context["checkout_link"]
-        if "search_query" in state.soft_context:
-            del state.soft_context["search_query"]
-        state.selected_products = []
-        state.available_variants = []
-=======
     order = None
     identified_by = None
->>>>>>> Stashed changes
 
     # --- Estratégia 1: Telefone do WhatsApp (abordagem invisível) ---
     phone = state.customer_phone or state.metadata.get("customer_phone_raw")
@@ -250,64 +239,6 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         except Exception as e:
             logger.warning(f"[action_get_order] Busca por order_id falhou: {e}")
 
-<<<<<<< Updated upstream
-        if not order:
-            state.last_action_success = False
-            state.soft_context["order_error"] = "order_not_found"
-            state.tracking_url = None
-            if "tracking_number" in state.soft_context:
-                del state.soft_context["tracking_number"]
-            state.bump_frustration()
-            state.last_action = "get_order"
-            return state
-
-        # Success!
-        state.last_action_success = True
-        # Store internal Shopify ID for technical reference, but keep state.order_id as customer facing number
-        if order.get("id"):
-            state.soft_context["shopify_order_id"] = str(order.get("id"))
-            
-        # Ensure state.order_id is the customer facing number (ex: 1001)
-        # This is critical for UX consistency.
-        if order.get("order_number") and not state.order_id:
-            state.order_id = str(order.get("order_number"))
-        elif order.get("order_number") and state.order_id and str(order.get("order_number")) != str(state.order_id):
-            # If we found it via internal ID but state has something else, align it to number
-            # preventing internal ID from sticking in state.order_id
-            state.order_id = str(order.get("order_number"))
-
-        # Extract tracking
-        # extract_tracking returns (tracking_number, tracking_url)
-        tracking_number, tracking_url = client.extract_tracking(order)
-        
-        state.tracking_url = tracking_url
-        if tracking_number:
-            state.soft_context["tracking_number"] = tracking_number
-        
-        if order.get("email"):
-            state.customer_email = order.get("email")
-
-        state.soft_context["order_status"] = order.get("financial_status")
-        state.soft_context["fulfillment_status"] = order.get("fulfillment_status")
-        state.soft_context["order_items"] = _extract_items(order)
-        state.soft_context["order_created_at"] = order.get("created_at")
-        if order.get("order_number") is not None:
-            state.soft_context["order_number"] = str(order.get("order_number"))
-
-        state.last_action_success = True
-        state.last_action = "get_order"
-        return state
-
-    except Exception as exc:
-        state.last_action_success = False
-        state.last_action = "get_order"
-        state.soft_context["order_error"] = str(exc)
-        state.system_error = str(exc)
-        state.tracking_url = None
-        if "tracking_number" in state.soft_context:
-            del state.soft_context["tracking_number"]
-        state.bump_frustration()
-=======
     # --- Nenhum dado disponível: pedir e-mail ao cliente ---
     if not order and not phone and not state.customer_email and not state.order_id:
         state.missing_info_needed = ["email"]
@@ -316,7 +247,6 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         state.last_action_success = False
         state.metadata["wismo_needs"] = "email_or_order_id"
         logger.info("[action_get_order] Sem dados suficientes, solicitando e-mail.")
->>>>>>> Stashed changes
         return state
 
     # --- Pedido não encontrado (dados fornecidos mas sem resultado) ---

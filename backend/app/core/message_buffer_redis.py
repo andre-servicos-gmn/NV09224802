@@ -31,7 +31,10 @@ class RedisMessageBuffer:
     async def _get_redis(self) -> aioredis.Redis:
         if self._redis is None:
             self._redis = await aioredis.from_url(
-                self.redis_url, decode_responses=True
+                self.redis_url, 
+                decode_responses=True,
+                health_check_interval=30,
+                retry_on_timeout=True
             )
         return self._redis
 
