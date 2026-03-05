@@ -308,7 +308,7 @@ async def process_consolidated_message(
 
         # Handle Reset Command
         if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
-            from app.core.session_store import clear_session
+            from app.core.session_store_v2 import clear_session
             clear_session(tenant_uuid, session_id)
             logger.info(f"🔄 Session reset requested for {session_id}")
             await adapter.send_text_message(
@@ -404,6 +404,7 @@ async def process_consolidated_message(
 
         if decision.sentiment_level != "calm" or _has_frustration(text):
             state.bump_frustration()
+            # If high frustration, force handoff potentially? (Handled by graph policies usually)
             
         # Extrair telefone do cliente
         if from_number:
@@ -453,6 +454,7 @@ async def process_consolidated_message(
             
             return
 
+
         # Process with AI agent/graph
         result_state = await asyncio.to_thread(run_main_graph, state, tenant)
         
@@ -474,6 +476,27 @@ async def process_consolidated_message(
                     to=from_number,
                     text=chunk,
                 )
+                # Persist AGENT message to database
+                try:
+                    # Retrieve conversation ID
+                    conversation = get_or_create_conversation(
+                        tenant_id=tenant_uuid,
+                        session_id=session_id,
+                        channel="whatsapp"
+                    )
+                    if conversation and conversation.get("id"):
+                        save_message(
+                            conversation_id=conversation.get("id"),
+                            sender_type="agent",  # or "ai" depending on frontend expectation (frontend handles 'agent')
+                            content=chunk,
+                            metadata={
+                                "provider": "evolution",
+                                "message_id": getattr(send_result, "message_id", None)
+                            }
+                        )
+                        logger.info(f"[DB] Agent message persisted for session {session_id}")
+                except Exception as e:
+                    logger.error(f"[ERR] Failed to save agent message: {e}")
                 
                 if not send_result.success:
                     logger.error(f"Failed to send WhatsApp chunk {i+1}/{len(chunks)}: {send_result.error}")
@@ -483,27 +506,7 @@ async def process_consolidated_message(
                 if i < len(chunks) - 1:
                     delay = min(1.0 + len(chunk) / 200, 2.5)  # 1.0s-2.5s based on length
                     await asyncio.sleep(delay)
-            
-            # Persist AGENT message to database
-            try:
-                conversation = get_or_create_conversation(
-                    tenant_id=tenant_uuid,
-                    session_id=session_id,
-                    channel="whatsapp"
-                )
-                if conversation and conversation.get("id"):
-                    save_message(
-                        conversation_id=conversation.get("id"),
-                        sender_type="agent",
-                        content=response_text,
-                        metadata={
-                            "provider": "evolution",
-                            "message_id": getattr(send_result, "message_id", None)
-                        }
-                    )
-                    logger.info(f"[DB] Agent message persisted for session {session_id}")
-            except Exception as e:
-                logger.error(f"[ERR] Failed to save agent message: {e}")
+
         else:
             save_session(tenant_uuid, session_id, result_state)
             
@@ -675,12 +678,11 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
         logger.warning(f"⚠️ Tenant '{tenant_id}' not found. Redirecting to DEMO tenant.")
         
         original_tenant_id = tenant_id
-        tenant_id = "c35fe360-dc69-4997-9d1f-ae57f4d8a135"
+        tenant_id = "73ee1a5c-1160-4a51-ba34-3fdddcd49f9e"
         
         from app.core.tenancy import TenantConfig
         tenant = TenantConfig(
-            tenant_id="demo",
-            uuid=tenant_id,
+            tenant_id=tenant_id,
             name="Demo Store",
             active=True,
             whatsapp_provider="evolution",

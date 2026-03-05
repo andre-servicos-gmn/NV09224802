@@ -37,7 +37,7 @@ class ConversationState(BaseModel):
     # [NOVO] Contexto Suave (Motivação, Urgência) - O que o prompt de memória extrai como 'soft_context'
     soft_context: Dict = Field(default_factory=dict) 
     
-    # Metadata geral (telefone, erros, dados de busca, etc.)
+    # Metadados internos para manter estados e variáveis ​​temporárias (telefone bruto, erros wismo)
     metadata: Dict = Field(default_factory=dict)
     
     # [NOVO] O que falta para fechar a ação (Ex: ["tamanho", "cor"])
