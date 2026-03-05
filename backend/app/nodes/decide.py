@@ -65,7 +65,7 @@ SALES_DECIDE_PROMPT = """Você é o Cérebro de Vendas do Nouvaris AI.
 Sua missão é mover o cliente pelo funil de vendas da forma mais eficiente possível.
 
 ## ESTADO ATUAL
-Ferramentas disponíveis: [search_products, select_variant, generate_checkout_link, human_handoff]
+Ferramentas disponíveis: [search_products, select_variant, human_handoff]
 Contexto: {context}
 
 ## ESTRATÉGIA DE DECISÃO (O "Funil")
@@ -79,9 +79,9 @@ Contexto: {context}
    - Gatilho: Cliente escolheu o modelo mas falta cor/tamanho.
 
 3. **FASE DE FECHAMENTO (O cliente decidiu)**
-   - Ação: `generate_checkout_link`
+   - Ação: `response`
    - Gatilho: "Quero esse", "Quanto fica o frete para CEP X?", "Manda o link".
-   - **Regra de Ouro:** Se o cliente deu sinais de compra, NÃO ofereça mais produtos. Feche a venda.
+   - **Regra de Ouro:** Se o cliente deu sinais de compra, NÃO ofereça mais produtos. Conduza o fechamento da venda pelo chat.
 
 4. **FASE DE RECUPERAÇÃO/ERRO**
    - Ação: `human_handoff`
@@ -148,6 +148,24 @@ def _build_conversation_context(state: ConversationState) -> str:
 def _decide_with_heuristics(state: ConversationState) -> str:
     """Fast heuristic-based decision (no LLM call needed)."""
     
+    # ======================================================================
+    # CLEANUP: Reset product context on greetings / general conversation
+    # If the user says "oi" or starts a new topic, they don't want to see
+    # stale products from a previous interaction.
+    # ======================================================================
+    RESET_INTENTS = {"greeting", "general", "store_qa"}
+    if state.intent in RESET_INTENTS:
+        state.selected_products = []
+        state.available_variants = []
+        state.search_query = None
+        state.soft_context.pop("focused_product_id", None)
+        state.soft_context.pop("selected_variant_id", None)
+        state.soft_context.pop("selected_variant_title", None)
+        state.soft_context.pop("search_results_count", None)
+        state.soft_context.pop("search_method", None)
+        state.soft_context.pop("search_error", None)
+        logger.info(f"[DECIDE] Intent '{state.intent}' → cleared stale product context")
+    
     selected_variant_id = state.soft_context.get("selected_variant_id")
     
     # Intents that SHOULD trigger link generation when variant is selected
@@ -165,10 +183,10 @@ def _decide_with_heuristics(state: ConversationState) -> str:
     if (selected_variant_id 
         and state.selected_products 
         and state.intent in PURCHASE_INTENTS
-        and state.last_action != "action_generate_link"):
+        and state.last_action != "respond"):
         
-        logger.info("[DECIDE] Variant selected + purchase intent → generate_link")
-        return "action_generate_link"
+        logger.info("[DECIDE] Variant selected + purchase intent → respond")
+        return "respond"
     
     # ======================================================================
     # PRIORITY 0.5: USER NAMES A PRODUCT → MATCH & SELECT
@@ -195,8 +213,8 @@ def _decide_with_heuristics(state: ConversationState) -> str:
                 else:
                     state.soft_context["selected_variant_id"] = str(matched.get("product_id") or matched.get("id"))
                     state.soft_context["selected_variant_title"] = matched.get("title", "")
-                logger.info(f"[DECIDE] Matched product '{matched.get('title')}' → auto-selected variant → generate_link")
-                return "action_generate_link"
+                logger.info(f"[DECIDE] Matched product '{matched.get('title')}' → auto-selected variant → respond")
+                return "respond"
             else:
                 # Multiple variants — populate available_variants and ask
                 state.available_variants = [
@@ -239,14 +257,14 @@ def _decide_with_heuristics(state: ConversationState) -> str:
     if state.available_variants and len(state.available_variants) == 1 and not state.soft_context.get("selected_variant_id"):
         state.soft_context["selected_variant_id"] = state.available_variants[0]["id"]
         state.soft_context["selected_variant_title"] = state.available_variants[0]["title"]
-        return "action_generate_link"
+        return "respond"
         
         first_product = state.selected_products[0]
         variants = first_product.get("variants") or []
         if len(variants) == 1:
             # Auto-select the single variant (fallback to raw data if needed)
             state.soft_context["selected_variant_id"] = str(variants[0].get("id"))
-            return "action_generate_link"
+            return "respond"
     
     # Priority 4: Intent-based routing
     if state.intent == INTENT_PRODUCT_LINK:
@@ -263,8 +281,8 @@ def _decide_with_heuristics(state: ConversationState) -> str:
                 else:
                     state.soft_context["selected_variant_id"] = str(product.get("product_id") or product.get("id"))
                     state.soft_context["selected_variant_title"] = product.get("title", "")
-                logger.info(f"[DECIDE] product_link: Auto-selected variant {state.soft_context['selected_variant_id']} → generate_link")
-                return "action_generate_link"
+                logger.info(f"[DECIDE] product_link: Auto-selected variant {state.soft_context['selected_variant_id']} → respond")
+                return "respond"
             
             # Multiple variants - need to ask user
             if state.available_variants:
@@ -299,8 +317,8 @@ def _decide_with_heuristics(state: ConversationState) -> str:
                 else:
                     state.soft_context["selected_variant_id"] = str(product.get("product_id") or product.get("id"))
                     state.soft_context["selected_variant_title"] = product.get("title", "")
-                logger.info(f"[DECIDE] cart_retry: Auto-selected variant {state.soft_context['selected_variant_id']} → generate_link")
-                return "action_generate_link"
+                logger.info(f"[DECIDE] cart_retry: Auto-selected variant {state.soft_context['selected_variant_id']} → respond")
+                return "respond"
             
             # Multiple variants - need to ask user
             return "action_select_variant"
@@ -332,7 +350,7 @@ def _decide_with_heuristics(state: ConversationState) -> str:
         
         # If already have variant, just generate link
         if state.soft_context.get("selected_variant_id"):
-            return "action_generate_link"
+            return "respond"
         
         # If we have products
         if state.selected_products:
@@ -348,8 +366,8 @@ def _decide_with_heuristics(state: ConversationState) -> str:
                     # No variants in data - use product_id as variant_id (Shopify default)
                     state.soft_context["selected_variant_id"] = str(first_product.get("product_id") or first_product.get("id"))
                     state.soft_context["selected_variant_title"] = first_product.get("title", "")
-                logger.info(f"[DECIDE] PURCHASE_INTENT: Auto-selected variant {state.soft_context['selected_variant_id']} → generate_link")
-                return "action_generate_link"
+                logger.info(f"[DECIDE] PURCHASE_INTENT: Auto-selected variant {state.soft_context['selected_variant_id']} → respond")
+                return "respond"
             
             # Multiple variants - need user to choose
             if state.available_variants and len(state.available_variants) > 1:
@@ -376,7 +394,7 @@ def _decide_with_heuristics(state: ConversationState) -> str:
             # Switch strategy if last failed
             if state.last_action_success is False:
                 state.last_strategy = next_strategy(state.last_strategy)
-            return "action_generate_link"
+            return "respond"
         else:
             return "respond"
     
@@ -451,8 +469,6 @@ def decide_with_llm(state: ConversationState, tenant: TenantConfig) -> Conversat
         # Tool Mapping (Turbo Prompt friendly names -> System Node names)
         tool_map = {
             "search_products": "action_search_products",
-            "select_variant": "action_select_variant",
-            "generate_checkout_link": "action_generate_link",
             "human_handoff": "handoff",
             "response": "respond"
         }

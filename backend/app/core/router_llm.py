@@ -403,5 +403,32 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
             rationale="Link request with product context → purchase_intent",
         )
     
+    # ==========================================================================
+    # CATALOG / PRODUCT BROWSING: Generic product queries → search_product
+    # Catches: "quais produtos", "o que vocês vendem", "catalogo", "mostra produtos"
+    # ==========================================================================
+    product_catalog_patterns = [
+        r'(?:quais|quai|qual)\s+(?:s[aã]o\s+)?(?:os\s+)?(?:produtos|itens|peças)',
+        r'(?:o\s+que|oque)\s+(?:voc[eê]s?\s+)?(?:vendem?|t[eê]m)',
+        r'(?:mostr[ea]|ver|vejo|veja)\s+(?:os?\s+)?(?:produtos|catálogo|catalogo|itens|peças)',
+        r'(?:cat[aá]logo|catalogo|vitrine)',
+        r'(?:produtos\s+(?:da\s+loja|dispon[ií]veis?|venda))',
+        r'(?:tem\s+(?:algum|algo|produtos?))',
+        r'(?:quero\s+ver\s+(?:os?\s+)?(?:produtos?|itens|peças))',
+        r'(?:me\s+mostr[ae]\s+(?:os?\s+)?(?:produtos?|itens|peças))',
+        r'(?:o\s+que\s+tem\s+(?:na\s+loja|pra\s+vender|para\s+vender))',
+    ]
+    
+    for pattern in product_catalog_patterns:
+        if re.search(pattern, msg_lower):
+            return RouterResult(
+                domain="sales",
+                intent="search_product",
+                confidence=0.95,
+                ambiguous=False,
+                entities={"search_query": message.strip()},
+                rationale="Product catalog/browsing query detected",
+            )
+    
     # No obvious pattern, use LLM
     return None

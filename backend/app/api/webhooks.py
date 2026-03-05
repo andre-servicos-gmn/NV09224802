@@ -309,7 +309,7 @@ async def process_consolidated_message(
         # Handle Reset Command
         if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
             from app.core.session_store import clear_session
-            clear_session(tenant.tenant_id, session_id)
+            clear_session(tenant_uuid, session_id)
             logger.info(f"🔄 Session reset requested for {session_id}")
             await adapter.send_text_message(
                 to=session_id,  # session_id is the phone number
@@ -318,14 +318,14 @@ async def process_consolidated_message(
             return
 
         # Session management
-        state = get_session(tenant.tenant_id, session_id)
+        state = get_session(tenant_uuid, session_id)
         
         if state:
             state.last_user_message = text
             state.add_to_history("user", text)
         else:
             state = ConversationState(
-                tenant_id=tenant.tenant_id,
+                tenant_id=tenant_uuid,
                 session_id=session_id,
                 channel="whatsapp",
                 last_user_message=text,
@@ -404,13 +404,15 @@ async def process_consolidated_message(
 
         if decision.sentiment_level != "calm" or _has_frustration(text):
             state.bump_frustration()
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-            # If high frustration, force handoff potentially? (Handled by graph policies usually)
-=======
-=======
->>>>>>> origin/main
             
+        # Extrair telefone do cliente
+        if from_number:
+            raw_phone = from_number.split("@")[0]  # remove @s.whatsapp.net se houver
+            clean_phone = "".join(c for c in raw_phone if c.isdigit())
+            if clean_phone:
+                state.customer_phone = clean_phone
+                state.metadata["customer_phone_raw"] = clean_phone
+
         # Stop Agent if Handoff is required
         if state.needs_handoff or state.frustration_level >= 3:
             reason = state.handoff_reason or "high_frustration"
@@ -421,18 +423,9 @@ async def process_consolidated_message(
             
             # Persist Handoff
             try:
-                # Need conversation ID (we have get_or_create_conversation imported)
-                # But we are in a non-async usage? 
-                # This function is async def process_consolidated_message.
-                # get_or_create_conversation is sync (blocking).
-                
                 conversation = await asyncio.to_thread(
                     get_or_create_conversation,
-<<<<<<< HEAD
                     tenant_id=tenant_uuid,
-=======
-                    tenant_id=tenant_id,
->>>>>>> origin/main
                     session_id=session_id,
                     channel="whatsapp",
                     number=from_number
@@ -459,18 +452,6 @@ async def process_consolidated_message(
                 logger.error(f"[ERR] Failed to persist handoff state: {e}")
             
             return
-<<<<<<< HEAD
->>>>>>> Stashed changes
-
-        # Extrair telefone do cliente
-        if from_number:
-            raw_phone = from_number.split("@")[0]  # remove @s.whatsapp.net se houver
-            clean_phone = "".join(c for c in raw_phone if c.isdigit())
-            if clean_phone:
-                state.customer_phone = clean_phone
-                state.metadata["customer_phone_raw"] = clean_phone
-=======
->>>>>>> origin/main
 
         # Process with AI agent/graph
         result_state = await asyncio.to_thread(run_main_graph, state, tenant)
@@ -481,31 +462,17 @@ async def process_consolidated_message(
             # Record sent message for anti-loop
             _record_sent_message(response_text)
             
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
             await adapter.mark_as_read(message_id)
             
             # Split into multiple messages for natural conversation feel
             chunks = _split_message(response_text)
             
-<<<<<<< HEAD
-<<<<<<< Updated upstream
             for i, chunk in enumerate(chunks):
                 send_result = await adapter.send_text_message(
                     to=from_number,
                     text=chunk,
-=======
-=======
->>>>>>> origin/main
-            # Persist AGENT message to database
-            try:
-                # Retrieve conversation ID
-                conversation = get_or_create_conversation(
-<<<<<<< HEAD
-                    tenant_id=tenant_uuid,
-                    session_id=session_id,
-                    channel="whatsapp"
->>>>>>> Stashed changes
                 )
                 
                 if not send_result.success:
@@ -514,17 +481,20 @@ async def process_consolidated_message(
                 
                 # Human-like delay between messages (skip after last)
                 if i < len(chunks) - 1:
-                    delay = min(1.0 + len(chunk) / 200, 2.5)  # 1.0s–2.5s based on length
+                    delay = min(1.0 + len(chunk) / 200, 2.5)  # 1.0s-2.5s based on length
                     await asyncio.sleep(delay)
-=======
-                    tenant_id=tenant.tenant_id,
+            
+            # Persist AGENT message to database
+            try:
+                conversation = get_or_create_conversation(
+                    tenant_id=tenant_uuid,
                     session_id=session_id,
                     channel="whatsapp"
                 )
                 if conversation and conversation.get("id"):
                     save_message(
                         conversation_id=conversation.get("id"),
-                        sender_type="agent",  # or "ai" depending on frontend expectation (frontend handles 'agent')
+                        sender_type="agent",
                         content=response_text,
                         metadata={
                             "provider": "evolution",
@@ -534,12 +504,8 @@ async def process_consolidated_message(
                     logger.info(f"[DB] Agent message persisted for session {session_id}")
             except Exception as e:
                 logger.error(f"[ERR] Failed to save agent message: {e}")
-            
-            if not send_result.success:
-                logger.error(f"Failed to send WhatsApp response: {send_result.error}")
->>>>>>> origin/main
         else:
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
     except Exception as e:
         logger.error(f"Error processing WhatsApp message: {e}", exc_info=True)
@@ -705,34 +671,16 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             registry = TenantRegistry()
             tenant = await registry.get_async(tenant_id, use_cache=True)
     except ValueError:
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-        logger.error(f"❌ Tenant not found in registry: {tenant_id}")
-        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
-=======
-=======
->>>>>>> origin/main
         # FAILSAFE: Always use Mock/Demo tenant for testing locally
-        # This redirects ANY incoming webhook to the seeded "Demo Store" so it shows up in the panel
         logger.warning(f"⚠️ Tenant '{tenant_id}' not found. Redirecting to DEMO tenant.")
         
-        # FORCE tenant_id to the one we seeded in the DB
-        # This ensures persistence works (FK checks) and Realtime triggers for the Demo dashboard
         original_tenant_id = tenant_id
-<<<<<<< HEAD
         tenant_id = "c35fe360-dc69-4997-9d1f-ae57f4d8a135"
         
         from app.core.tenancy import TenantConfig
         tenant = TenantConfig(
             tenant_id="demo",
             uuid=tenant_id,
-=======
-        tenant_id = "73ee1a5c-1160-4a51-ba34-3fdddcd49f9e"
-        
-        from app.core.tenancy import TenantConfig
-        tenant = TenantConfig(
-            tenant_id=tenant_id,
->>>>>>> origin/main
             name="Demo Store",
             active=True,
             whatsapp_provider="evolution",
@@ -740,10 +688,6 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             whatsapp_instance_url="http://localhost:8080",
             whatsapp_api_key="mock_key"
         )
-<<<<<<< HEAD
->>>>>>> Stashed changes
-=======
->>>>>>> origin/main
     
     # Get WhatsApp adapter
     adapter = _get_whatsapp_adapter(tenant)
@@ -778,18 +722,9 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     raw_id = adapter.get_session_id() or message.from_number
     session_id = "".join(filter(str.isdigit, str(raw_id)))
     
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-    # Buffer message
-=======
-=======
->>>>>>> origin/main
-
-    
     logger.info(f"[WH] received tenant={tenant_id[:8]}... from={session_id}")
     
     # Persist to database (Background Task)
-    # Allows immediate return for buffering performance
     created_at_iso = None
     msg_ts = getattr(message, "timestamp", 0)
     if msg_ts:
@@ -802,18 +737,10 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             pass
 
     asyncio.create_task(
-<<<<<<< HEAD
         _bg_persist_message(tenant.uuid or tenant.tenant_id, session_id, message, created_at_iso)
     )
     
     # Buffer message for AI processing
->>>>>>> Stashed changes
-=======
-        _bg_persist_message(tenant_id, session_id, message, created_at_iso)
-    )
-    
-    # Buffer message for AI processing
->>>>>>> origin/main
     await message_buffer.add_message(
         session_id,
         message.text,

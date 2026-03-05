@@ -9,33 +9,14 @@ from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
 
 
-def _ensure_link_once(message: str, link: str | None) -> str:
-    """Ensure checkout link appears exactly once in the message."""
-    if not link:
-        return message
-    if link not in message:
-        return f"{message}\n\n{link}".strip()
-    # Remove duplicate occurrences beyond the first
-    count = message.count(link)
-    if count <= 1:
-        return message
 
-    parts = message.split(link)
-    cleaned = parts[0] + link + "".join(parts[1:])
-    return cleaned.strip()
-
-
-def _sanitize_fake_links(message: str, real_link: str | None) -> str:
+def _sanitize_fake_links(message: str) -> str:
     """
     Remove fake link placeholders AND hallucinated link sentences from LLM response.
     
     Catches both explicit placeholders ([LINK], (link aqui)) AND natural language
-    patterns where the LLM says "Aqui está o link" without an actual URL.
+    patterns where the LLM says "Aqui está o link" sem um URL real.
     """
-    # If there's a real link with a valid URL, no sanitization needed
-    if real_link and real_link.startswith('http'):
-        return message
-    
     # Check if message contains any real URL — if so, skip sanitization
     if re.search(r'https?://\S+', message):
         return message
@@ -96,7 +77,6 @@ def respond(state: ConversationState, tenant: TenantConfig) -> ConversationState
     logger.info("[RESPOND] ▶️ ENTRY")
     logger.info(f"[RESPOND] Intent: {state.intent}")
     logger.info(f"[RESPOND] Last Action: {state.last_action}")
-    logger.info(f"[RESPOND] checkout_link: {state.checkout_link}")
     logger.info(f"[RESPOND] selected_variant_id: {state.soft_context.get('selected_variant_id')}")
     
     try:
@@ -114,16 +94,8 @@ def respond(state: ConversationState, tenant: TenantConfig) -> ConversationState
         )
         logger.info(f"[RESPOND] LLM Response (first 100 chars): {response[:100] if response else 'NONE'}...")
 
-        # Sanitize fake link placeholders BEFORE ensuring real link
-        link = state.checkout_link
-        logger.info(f"[RESPOND] Sanitizing with real_link={link}")
-        response = _sanitize_fake_links(response, link)
-        
-        # Only force-append checkout link for purchase-related intents
-        # For checkout_error, support, etc. — DON'T inject the link
-        NON_LINK_INTENTS = {"checkout_error", "greeting", "general", "order_status", "order_complaint"}
-        if state.intent not in NON_LINK_INTENTS:
-            response = _ensure_link_once(response, link)
+        logger.info(f"[RESPOND] Sanitizing fake links...")
+        response = _sanitize_fake_links(response)
         logger.info(f"[RESPOND] Final Response (first 150 chars): {response[:150] if response else 'NONE'}...")
 
         state.last_bot_message = response

@@ -57,8 +57,7 @@ def _build_base_system_prompt(tenant: TenantConfig, domain: str) -> str:
     if domain == "sales":
         base += (
             "Você está ajudando o cliente a comprar produtos. "
-            "Se ele quiser comprar, gere ou forneça o link de checkout. "
-            "Se o link falhar, ofereça alternativas. "
+            "Seja consultivo, tire dúvidas e auxilie na escolha. "
         )
     elif domain == "support":
         base += (
@@ -100,9 +99,6 @@ def _build_user_prompt(state: ConversationState, knowledge_context: str) -> str:
         if status:
             lines.append(f"Status do pedido: {status}")
     
-    checkout_link = state.checkout_link
-    if checkout_link:
-        lines.append(f"Link de checkout gerado: {checkout_link}")
     
     faq_answer = state.soft_context.get("faq_answer")
     if faq_answer:
@@ -160,9 +156,6 @@ def generate_llm_response(
         response = (result.content or "").strip()
         
         # Ensure checkout link is included if present
-        checkout_link = state.checkout_link
-        if checkout_link and checkout_link not in response:
-            response = f"{response}\n\n{checkout_link}"
         
         return response
     except Exception as e:
@@ -178,9 +171,6 @@ def _get_fallback_response(state: ConversationState, domain: str) -> str:
         return "Oi! Como posso ajudar?"
     
     if domain == "sales":
-        checkout_link = state.checkout_link
-        if checkout_link:
-            return f"Pronto! Aqui está o link para finalizar:\n{checkout_link}"
         return "Me manda o link do produto ou o nome pra eu ajudar."
     
     if domain == "support":

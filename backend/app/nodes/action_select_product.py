@@ -7,14 +7,15 @@ Extrai o numero da mensagem do usuario e carrega variantes do produto.
 
 
 import re
-import requests
-
+import logging
 from app.core.tenancy import TenantConfig
 from app.core.state import ConversationState
 from app.tools.shopify_client import ShopifyClient
 
+logger = logging.getLogger(__name__)
 
 def _extract_selection(message: str) -> int | None:
+    # Match any stand-alone number in the message
     match = re.search(r"\b([1-9][0-9]?)\b", message)
     if not match:
         return None
@@ -27,13 +28,6 @@ def action_select_product(
 ) -> ConversationState:
     """
     Seleciona um produto da lista e busca variantes na Shopify.
-
-    Args:
-        state: Estado atual da conversa
-        tenant: Configuracao do tenant (com credenciais Shopify)
-
-    Returns:
-        ConversationState atualizado com selected_product_id e available_variants
     """
     client = ShopifyClient(
         store_domain=tenant.store_domain,
@@ -43,6 +37,7 @@ def action_select_product(
 
     try:
         if not state.selected_products:
+            logger.error("[SELECT_PRODUCT] No selected_products in state")
             state.last_action_success = False
             state.soft_context["select_product_error"] = "no_selected_products"
             state.bump_frustration()
@@ -52,7 +47,10 @@ def action_select_product(
 
         message = state.last_user_message or ""
         selection = _extract_selection(message)
+        logger.info(f"[SELECT_PRODUCT] Extracted selection '{selection}' from message '{message}'")
+        
         if selection is None:
+            logger.error("[SELECT_PRODUCT] Could not extract numeric selection")
             state.last_action_success = False
             state.soft_context["select_product_error"] = "no_selection"
             state.bump_frustration()
@@ -62,6 +60,7 @@ def action_select_product(
 
         index = selection - 1
         if index < 0 or index >= len(state.selected_products):
+            logger.error(f"[SELECT_PRODUCT] Index {index} (selection {selection}) out of range (0-{len(state.selected_products)-1})")
             state.last_action_success = False
             state.soft_context["select_product_error"] = "selection_out_of_range"
             state.bump_frustration()
@@ -70,9 +69,14 @@ def action_select_product(
             return state
 
         product = state.selected_products[index]
-        product_id = str(product.get("product_id"))
+        product_id = str(product.get("product_id") or product.get("id"))
+        
+        logger.info(f"[SELECT_PRODUCT] Selected product index {index}, ID: {product_id}, Title: {product.get('title')}")
 
+        logger.info(f"[SELECT_PRODUCT] Fetching variants for Shopify product {product_id}")
         variants = client.get_product_variants(product_id)
+        logger.info(f"[SELECT_PRODUCT] Fetched {len(variants)} variants")
+        
         state.soft_context["focused_product_id"] = product_id
         state.available_variants = variants
         state.soft_context["product_title"] = product.get("title", "")
@@ -87,12 +91,15 @@ def action_select_product(
                 state.soft_context["selected_variant_title"] = variant.get("title", "")
                 state.soft_context["selected_variant_price"] = variant.get("price", "")
             state.available_variants = []
+            logger.info("[SELECT_PRODUCT] Single variant (or none). Auto-selected variant.")
         else:
             state.soft_context["selected_variant_id"] = None
+            logger.info("[SELECT_PRODUCT] Multiple variants. Will need variant selection.")
 
         state.last_action_success = True
 
     except requests.Timeout:
+        logger.error("[SELECT_PRODUCT] Shopify API Timeout")
         state.last_action_success = False
         state.system_error = "timeout"
         state.soft_context["select_product_error"] = "timeout"
@@ -102,8 +109,9 @@ def action_select_product(
         state.bump_frustration()
 
     except requests.HTTPError as exc:
+        logger.error(f"[SELECT_PRODUCT] Shopify HTTPError: {exc}")
         state.last_action_success = False
-        if exc.response.status_code == 429:
+        if exc.response is not None and exc.response.status_code == 429:
             state.system_error = "rate_limit"
             state.soft_context["select_product_error"] = "rate_limit"
         else:
@@ -115,6 +123,7 @@ def action_select_product(
         state.bump_frustration()
 
     except Exception as exc:
+        logger.error(f"[SELECT_PRODUCT] Unknown Error: {exc}", exc_info=True)
         state.last_action_success = False
         state.system_error = str(exc)
         state.soft_context["select_product_error"] = str(exc)

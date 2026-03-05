@@ -21,7 +21,6 @@ class ConversationState(BaseModel):
     cart_items: List[dict] = Field(default_factory=list)
     
     # [NOVO] O Link Sagrado - Diferente de tracking_url!
-    checkout_link: Optional[str] = None   
     
     # --- MEMÓRIA DE SUPORTE (SUPPORT CONTEXT) ---
     order_id: Optional[str] = None
@@ -38,8 +37,14 @@ class ConversationState(BaseModel):
     # [NOVO] Contexto Suave (Motivação, Urgência) - O que o prompt de memória extrai como 'soft_context'
     soft_context: Dict = Field(default_factory=dict) 
     
+    # Metadata geral (telefone, erros, dados de busca, etc.)
+    metadata: Dict = Field(default_factory=dict)
+    
     # [NOVO] O que falta para fechar a ação (Ex: ["tamanho", "cor"])
     blocking_info: List[str] = Field(default_factory=list)
+    
+    # [NOVO] Histórico de produtos já mostrados na sessão para evitar repetição
+    shown_product_ids: List[str] = Field(default_factory=list)
     
     # [NOVO] Texto recuperado do RAG (Supabase) para o Humanizer ler
     rag_context: Optional[str] = None 
