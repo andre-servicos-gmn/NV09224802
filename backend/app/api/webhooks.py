@@ -355,6 +355,20 @@ async def process_consolidated_message(
                 if state.intent and state.intent != 'general':
                     state.soft_context['keep_current_intent'] = True
         
+        # Adjustment 6: Subject Change Detection
+        # When user changes subject entirely, clear the product focus context
+        subject_change_patterns = [
+            r'^e\s+(esse|essa|a|o)\s+\w+', 
+            r'^e\s+\w+\?\s*$',
+            r'^queria\s+ver\s+(outro|outra)'
+        ]
+        
+        if any(re.search(p, text.lower().strip()) for p in subject_change_patterns):
+            logger.info(f"🔄 Subject change detected: '{text}' → clearing focused product")
+            # Clear focused product to avoid confusion
+            state.soft_context.pop("focused_product_id", None)
+            state.soft_context.pop("selected_variant_id", None)
+        
         # Prepare context for Router
         context = {
             "tenant_id": state.tenant_id,

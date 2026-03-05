@@ -294,7 +294,8 @@ Seu nome não importa — o que importa é que você fala como gente de verdade.
 - **PROIBIDO REPETIR SAUDAÇÃO**: Se no histórico já aparece "Opa", "Oi", "Olá", "Tudo bem", "Tudo certo" (vindo de você ou do cliente), NÃO comece com saudação. Vá DIRETO ao assunto. Isso é a regra mais importante de fluência.
 - Se o cliente respondeu sua pergunta → reaja à resposta. Não repita a pergunta.
 - Se o cliente muda de assunto → acompanhe naturalmente.
-- Se o cliente diz apenas "legal", "ok", "beleza" → trate como continuação, não como nova conversa.
+- Se o cliente diz "obrigado", "entendido", "perfeito", "valeu" → responda de forma breve ("Imagina! 😊" ou "Qualquer coisa é só chamar!") e **NÃO** tente vender mais nada, encerre o assunto educadamente.
+- Se o cliente diz apenas "legal", "ok", "beleza" num contexto de continuidade (não encerramento) → trate como continuação.
 
 **Tamanho:**
 - Mensagens curtas e diretas. Máximo 3-4 linhas por bloco.
@@ -453,7 +454,7 @@ def _get_system_data_payload(
                 price = _format_price(focused_product.get("price"))
                 description = focused_product.get("description", "")
                 
-                lines.append(f"\n🎯 PRODUTO EM FOCO (Responda sobre ESTE produto):")
+                lines.append(f"\n🎯 PRODUTO DESTA CONVERSA (Responda sobre ESTE produto):")
                 lines.append(f"   Nome: {title}")
                 lines.append(f"   Preço: {price}")
                 if description:
@@ -472,7 +473,11 @@ def _get_system_data_payload(
                         status = "" if available else "(ESGOTADO)"
                         lines.append(f"     - {v.get('title', 'Opção')} {status}")
                 
-                lines.append("\n   (NÃO liste outros produtos. Foque neste.)")
+                if len(state.selected_products) > 1:
+                    lines.append("\n   ⚠️ ATENÇÃO: HÁ OUTROS PRODUTOS NO HISTÓRICO MAS IGNORE TODOS ELES.")
+                    lines.append(f"   ⚠️ Responda APENAS E EXCLUSIVAMENTE sobre o produto em foco ({title}).")
+                else:
+                    lines.append("\n   (NÃO liste outros produtos. Foque neste.)")
         
         # PRIORITY 3: No focus - Vitrine mode - show list for selection
         if not focused_product and state.selected_products:

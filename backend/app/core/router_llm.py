@@ -359,10 +359,28 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
         )
     
     # ==========================================================================
-    # CRITICAL: Simple confirmation with product context → purchase_intent
-    # When user says "sim", "quero", "bora", etc. AND there are selected products,
-    # this is a PURCHASE CONFIRMATION. Skip LLM and route directly to generate link.
+    # Thanks / Closing patterns
+    # When user says "obrigado", "entendi", "valeu", etc. and no products are 
+    # being purchased, treat as general to avoid trying to sell more.
     # ==========================================================================
+    THANKS_PATTERNS = [
+        r'^(obrigad[oa]|thanks|thank you|vlw|mto obrigad[oa]|valeu|grato|agradeço)\W*$',
+        r'^(entendi|entendi obrigado|blz|blza|show|maravilha)\W*$',
+        r'^(j[aá]|j[aá] entendi|perfeito)\W*$',
+    ]
+    
+    if any(re.match(p, msg_lower) for p in THANKS_PATTERNS):
+        # We assume if the user is just saying thanks, that it's just a general interaction to be closed naturally.
+        return RouterResult(
+            domain="sales", # keep in sales domain to avoid support ticket logic, but use general intent
+            intent="general",
+            confidence=0.95,
+            ambiguous=False,
+            rationale="Thanks/closing signal detected → general intent",
+        )
+
+    # ==========================================================================
+    # CRITICAL: Simple confirmation with product context → purchase_intent
     confirmation_patterns = [
         r'^(sim|quero|esse|pode|ok|beleza|bora|yes|manda|claro|aceito|isso|fechou?|vou levar|quero esse|pode ser|manda o link|gera o link|me manda|por favor|pfv|pf)\W*$',
         r'^(sim|quero),?\s*(por favor|pfv|pode)?\W*$',
