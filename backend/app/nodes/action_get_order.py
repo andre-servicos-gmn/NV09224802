@@ -28,9 +28,10 @@ def _fetch_tracking_event(tracking_code: str, tracking_company: str | None = Non
     """
     Consulta o gateway logístico 17Track para obter a última movimentação.
 
-    Fluxo em 2 etapas:
-      1. POST /register  → registra o tracking number no 17Track (idempotente)
-      2. POST /gettrackinfo → busca a última movimentação
+    Usa o endpoint getRealTimeTrackInfo (v2.2) — uma única chamada que busca
+    dados frescos direto da transportadora, sem necessidade de registro prévio.
+
+    Referência: https://api.17track.net/track/v2.2/getRealTimeTrackInfo
 
     Returns:
         dict com:
@@ -48,88 +49,70 @@ def _fetch_tracking_event(tracking_code: str, tracking_company: str | None = Non
         "17token": track17_token,
         "Content-Type": "application/json",
     }
-    payload = [{"number": tracking_code}]
+    # lang="pt" solicita tradução dos eventos para português
+    payload = [{"number": tracking_code, "lang": "pt"}]
 
-    # ---------- Etapa 1: Registrar o tracking number (idempotente) ----------
-    try:
-        reg_resp = requests.post(
-            "https://api.17track.net/track/v2.2/register",
-            headers=headers,
-            json=payload,
-            timeout=8,
-        )
-        reg_resp.raise_for_status()
-        reg_data = reg_resp.json()
-        logger.info(f"[17Track] Register response code={reg_data.get('code')}: {tracking_code}")
-
-        # code 0 = ok, code -18010012 = already registered (both are fine)
-        rejected = reg_data.get("data", {}).get("rejected", [])
-        if rejected:
-            rej_code = rejected[0].get("error", {}).get("code", 0)
-            # -18010012 = "Item already exists" → ok, proceed
-            if rej_code != -18010012:
-                logger.warning(f"[17Track] Register rejected code={rej_code}: {rejected[0]}")
-    except Exception as e:
-        logger.warning(f"[17Track] Register failed for {tracking_code}: {e}")
-        # Continue anyway — maybe it was registered before
-
-    # ---------- Etapa 2: Buscar informações de rastreio ----------
     try:
         response = requests.post(
-            "https://api.17track.net/track/v2.2/gettrackinfo",
+            "https://api.17track.net/track/v2.2/getRealTimeTrackInfo",
             headers=headers,
             json=payload,
-            timeout=8,
+            timeout=15,  # real-time consulta a transportadora; pode demorar mais
         )
         response.raise_for_status()
         data = response.json()
-        logger.info(f"[17Track] GetTrackInfo response code={data.get('code')} for {tracking_code}")
+        logger.info(f"[17Track] getRealTimeTrackInfo code={data.get('code')} for {tracking_code}")
 
-        # 17Track returns results in 'data.accepted'
         accepted = data.get("data", {}).get("accepted", [])
 
         if not accepted:
-            logger.info(f"[17Track] No accepted results for {tracking_code}")
+            logger.info(f"[17Track] Nenhum resultado aceito para {tracking_code}")
             return {"last_event": "Aguardando atualização da transportadora.", "delivered": False, "error": None}
 
         track_info = accepted[0].get("track", {})
-        events = track_info.get("z1", [])  # z1 = newest events list
 
-        # 17Track status codes:
-        # 0: NotFound, 10: InTransit, 20: Expired, 30: PickedUp
-        # 40: Undelivered, 50: Delivered, 60: Alert
-        status_code = track_info.get("e", 0)
-        delivered = status_code == 50
+        # --- Status (v2.2): string em lastest_status.status ---
+        # Valores possíveis: NotFound, InfoReceived, InTransit, Expired,
+        # AvailableForPickup, OutForDelivery, DeliveryFailure, Delivered, Exception
+        lastest_status = track_info.get("lastest_status", {})
+        status = lastest_status.get("status", "NotFound")
+        delivered = status == "Delivered"
 
-        if events:
-            latest = events[0]  # events ordered newest → oldest
-            description = latest.get("z", "")
-            location = latest.get("c", "")  # city/location if available
-            event_time = latest.get("a", "")  # timestamp
+        # --- Evento mais recente ---
+        # z0 = último evento (objeto único, atalho para z1[0])
+        # z1 = lista de eventos do carrier principal (mais novo → mais antigo)
+        # Campos do evento: a=timestamp, z=descrição, c=cidade, d=endereço completo
+        latest_event = track_info.get("z0") or (track_info.get("z1") or [None])[0]
+
+        if latest_event:
+            description = latest_event.get("z", "")
+            location = latest_event.get("c", "") or latest_event.get("d", "")
 
             if location and description:
                 full_event = f"{description} ({location})"
             else:
                 full_event = description or "Movimentação registrada."
 
-            logger.info(f"[17Track] Last event: {full_event} | delivered={delivered} | status={status_code}")
+            logger.info(f"[17Track] Último evento: {full_event} | delivered={delivered} | status={status}")
             return {"last_event": full_event, "delivered": delivered, "error": None}
 
-        # No events yet
+        # Sem eventos ainda — usar mensagem baseada no status string
         status_messages = {
-            0: "Código de rastreio registrado. Aguardando primeira movimentação.",
-            10: "Em trânsito.",
-            20: "Informações de rastreio expiradas.",
-            30: "Pacote coletado pela transportadora.",
-            40: "Tentativa de entrega sem sucesso.",
-            50: "Pedido entregue!",
-            60: "Alerta na entrega. Verifique com a transportadora.",
+            "NotFound":           "Código de rastreio registrado. Aguardando primeira movimentação.",
+            "InfoReceived":       "Informações recebidas pela transportadora. Aguardando coleta.",
+            "InTransit":          "Pacote em trânsito.",
+            "Expired":            "Rastreio expirado. Verifique diretamente com a transportadora.",
+            "AvailableForPickup": "Pacote disponível para retirada.",
+            "OutForDelivery":     "Pacote saiu para entrega hoje!",
+            "DeliveryFailure":    "Tentativa de entrega sem sucesso.",
+            "Delivered":          "Pedido entregue!",
+            "Exception":          "Exceção no rastreio. Verifique com a transportadora.",
         }
-        fallback_msg = status_messages.get(status_code, "Aguardando atualização da transportadora.")
+        fallback_msg = status_messages.get(status, "Aguardando atualização da transportadora.")
         return {"last_event": fallback_msg, "delivered": delivered, "error": None}
 
     except Exception as e:
-        logger.warning(f"[17Track] GetTrackInfo failed for {tracking_code}: {e}")
+        logger.warning(f"[17Track] getRealTimeTrackInfo falhou para {tracking_code}: {e}")
         return {"last_event": None, "delivered": False, "error": str(e)}
 
 
@@ -179,7 +162,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
     Busca o pedido do cliente via Shopify e enriquece com dados de rastreio.
 
     Ordem de identificação:
-    1. Telefone do WhatsApp (invisível)
+    1. Telefone do WhatsApp (invisível ao usuário)
     2. E-mail (se cliente informou)
     3. Número do pedido (se cliente informou)
     4. Sem dados → solicita e-mail
@@ -194,7 +177,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         state.wismo_lookup_done = True
         state.last_action = "action_get_order"
         state.last_action_success = False
-        state.metadata["wismo_error"] = "shopify_not_configured"
+        state.soft_context["wismo_error"] = "shopify_not_configured"
         return state
 
     client = ShopifyClient(
@@ -203,27 +186,23 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         api_version=tenant.shopify_api_version,
     )
 
-<<<<<<< Updated upstream
-    try:
-        # Limpar contexto de outros dominios
-        if "checkout_link" in state.soft_context:
-            del state.soft_context["checkout_link"]
-        if "search_query" in state.soft_context:
-            del state.soft_context["search_query"]
-        state.selected_products = []
-        state.available_variants = []
-=======
     order = None
     identified_by = None
->>>>>>> Stashed changes
+
+    # Limpar contexto de outros domínios para não contaminar a resposta
+    state.selected_products = []
+    state.available_variants = []
+    if "checkout_link" in state.soft_context:
+        del state.soft_context["checkout_link"]
+    if "search_query" in state.soft_context:
+        del state.soft_context["search_query"]
 
     # --- Estratégia 1: Telefone do WhatsApp (abordagem invisível) ---
-    phone = state.customer_phone or state.metadata.get("customer_phone_raw")
+    phone = state.customer_phone or state.soft_context.get("customer_phone_raw")
     if phone and not order:
         try:
             orders = client.get_orders_by_phone(phone)
             if orders:
-                # Se encontrou mais de um, usa o mais recente (primeiro da lista)
                 order = orders[0]
                 identified_by = "phone"
                 logger.info(f"[action_get_order] Pedido encontrado por telefone: #{order['order_number']}")
@@ -250,73 +229,14 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         except Exception as e:
             logger.warning(f"[action_get_order] Busca por order_id falhou: {e}")
 
-<<<<<<< Updated upstream
-        if not order:
-            state.last_action_success = False
-            state.soft_context["order_error"] = "order_not_found"
-            state.tracking_url = None
-            if "tracking_number" in state.soft_context:
-                del state.soft_context["tracking_number"]
-            state.bump_frustration()
-            state.last_action = "get_order"
-            return state
-
-        # Success!
-        state.last_action_success = True
-        # Store internal Shopify ID for technical reference, but keep state.order_id as customer facing number
-        if order.get("id"):
-            state.soft_context["shopify_order_id"] = str(order.get("id"))
-            
-        # Ensure state.order_id is the customer facing number (ex: 1001)
-        # This is critical for UX consistency.
-        if order.get("order_number") and not state.order_id:
-            state.order_id = str(order.get("order_number"))
-        elif order.get("order_number") and state.order_id and str(order.get("order_number")) != str(state.order_id):
-            # If we found it via internal ID but state has something else, align it to number
-            # preventing internal ID from sticking in state.order_id
-            state.order_id = str(order.get("order_number"))
-
-        # Extract tracking
-        # extract_tracking returns (tracking_number, tracking_url)
-        tracking_number, tracking_url = client.extract_tracking(order)
-        
-        state.tracking_url = tracking_url
-        if tracking_number:
-            state.soft_context["tracking_number"] = tracking_number
-        
-        if order.get("email"):
-            state.customer_email = order.get("email")
-
-        state.soft_context["order_status"] = order.get("financial_status")
-        state.soft_context["fulfillment_status"] = order.get("fulfillment_status")
-        state.soft_context["order_items"] = _extract_items(order)
-        state.soft_context["order_created_at"] = order.get("created_at")
-        if order.get("order_number") is not None:
-            state.soft_context["order_number"] = str(order.get("order_number"))
-
-        state.last_action_success = True
-        state.last_action = "get_order"
-        return state
-
-    except Exception as exc:
-        state.last_action_success = False
-        state.last_action = "get_order"
-        state.soft_context["order_error"] = str(exc)
-        state.system_error = str(exc)
-        state.tracking_url = None
-        if "tracking_number" in state.soft_context:
-            del state.soft_context["tracking_number"]
-        state.bump_frustration()
-=======
     # --- Nenhum dado disponível: pedir e-mail ao cliente ---
     if not order and not phone and not state.customer_email and not state.order_id:
         state.missing_info_needed = ["email"]
         state.wismo_lookup_done = True
         state.last_action = "action_get_order"
         state.last_action_success = False
-        state.metadata["wismo_needs"] = "email_or_order_id"
+        state.soft_context["wismo_needs"] = "email_or_order_id"
         logger.info("[action_get_order] Sem dados suficientes, solicitando e-mail.")
->>>>>>> Stashed changes
         return state
 
     # --- Pedido não encontrado (dados fornecidos mas sem resultado) ---
@@ -324,7 +244,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
         state.wismo_lookup_done = True
         state.last_action = "action_get_order"
         state.last_action_success = False
-        state.metadata["wismo_error"] = "order_not_found"
+        state.soft_context["wismo_error"] = "order_not_found"
         logger.info("[action_get_order] Pedido não encontrado com os dados disponíveis.")
         return state
 
@@ -332,7 +252,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
     # PEDIDO ENCONTRADO — enriquecer o estado
     # =========================================================================
 
-    state.order_id = order["order_number"]        # sempre salvar o order_number visível
+    state.order_id = str(order["order_number"])       # sempre salvar o order_number visível
     state.customer_email = order.get("customer_email") or state.customer_email
     state.order_status = _humanize_status(order)
     state.tracking_code = order.get("tracking_code")
@@ -340,13 +260,16 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
     state.estimated_delivery = order.get("estimated_delivery_at")
     state.wismo_identified_by = identified_by
 
-    # Guardar status raw no metadata para o LLM ter contexto completo
-    state.metadata["order_raw"] = {
+    # Guardar status raw no soft_context para o LLM ter contexto completo
+    state.soft_context["order_raw"] = {
         "financial_status": order.get("financial_status"),
         "fulfillment_status": order.get("fulfillment_status"),
         "tracking_company": order.get("tracking_company"),
         "created_at": order.get("created_at"),
     }
+    # Armazenar também o shopify_order_id interno para referência técnica
+    if order.get("shopify_order_id"):
+        state.soft_context["shopify_order_id"] = order["shopify_order_id"]
 
     # --- Consulta logística (se pedido tem código de rastreio) ---
     if state.tracking_code:
