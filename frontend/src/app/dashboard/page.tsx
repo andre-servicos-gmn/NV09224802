@@ -7,7 +7,7 @@ import { ArrowUpRight } from "lucide-react";
 import { fetchDashboardData } from "@/lib/dashboard/fetchRaw";
 import {
     computeConversationsByDay,
-    computeRevenueAndTicket,
+    computeTimeSaved,
     computeFirstResponseSeconds,
     computeTopics,
     computeResolutionRate
@@ -19,8 +19,7 @@ export default function DashboardPage() {
     const [loading, setLoading] = useState(true);
     // const [debugTenant, setDebugTenant] = useState<string | null>(null); // DEBUG STATE REMOVED
     const [metrics, setMetrics] = useState({
-        revenue: 0,
-        avgTicket: 0,
+        timeSaved: { hours: 0, minutes: 0, daysEquivalency: 0 },
         resolutionRate: 0,
         responseSeconds: 0,
         conversationsByDay: [] as { name: string; value: number }[],
@@ -44,14 +43,13 @@ export default function DashboardPage() {
                 const rawData = await fetchDashboardData(storedTenantId, 7);
 
                 const convsByDay = computeConversationsByDay(rawData.messages);
-                const { revenue, avgTicket } = computeRevenueAndTicket(rawData.orders);
+                const timeSaved = computeTimeSaved(rawData.resolutionStats || []);
                 const responseSeconds = computeFirstResponseSeconds(rawData.messages);
                 const topics = computeTopics(rawData.messages);
                 const resolutionRate = computeResolutionRate(rawData.resolutionStats || []);
 
                 setMetrics({
-                    revenue,
-                    avgTicket,
+                    timeSaved,
                     responseSeconds,
                     resolutionRate,
                     conversationsByDay: convsByDay,
@@ -99,21 +97,21 @@ export default function DashboardPage() {
 
             {/* Metrics Row */}
             <div className="flex flex-col md:flex-row items-start gap-8 md:gap-0">
-                {/* Metric 1 - Revenue */}
+                {/* Metric 1 - Time Saved */}
                 <div className="flex-1 w-full md:pr-8 border-b md:border-b-0 border-white/[0.06] pb-6 md:pb-0">
-                    <span className="text-label">Vendas IA</span>
+                    <span className="text-label">Tempo Humano Poupado</span>
                     <div className="mt-3 flex items-baseline gap-3">
                         <span className="font-mono text-[42px] font-light tracking-tight text-white">
-                            {formatCurrency(metrics.revenue)}
+                            {metrics.timeSaved.hours}h {metrics.timeSaved.minutes}min
                         </span>
                         <div className="flex flex-col items-start">
-                            <span className="text-[12px] font-medium text-emerald-400 flex items-center gap-0.5">
+                            <span className="text-[12px] font-medium text-emerald-400 flex items-center gap-0.5" title="Crescimento em relação à semana anterior">
                                 <ArrowUpRight className="h-3 w-3" />
-                                {metrics.avgTicket > 0 ? `tíquete ${formatCurrency(metrics.avgTicket)}` : '0%'}
+                                100%
                             </span>
                         </div>
                     </div>
-                    <p className="text-[12px] text-[#444] mt-1">gerado pela IA</p>
+                    <p className="text-[12px] text-[#444] mt-1">Equivalente a {metrics.timeSaved.daysEquivalency} dias de trabalho de um colaborador.</p>
                 </div>
 
                 {/* Divider */}

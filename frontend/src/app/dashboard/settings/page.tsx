@@ -52,6 +52,7 @@ export default function SettingsPage() {
         max_storage: "500 MB",
         team: 0 // Will be updated from API
     });
+    const [isUsageLoading, setIsUsageLoading] = useState(true);
     const { showToast } = useToast();
 
     // Invite modal state
@@ -80,9 +81,9 @@ export default function SettingsPage() {
             setUserNameInput(userName);
         }
     }, [userName]);
-
     useEffect(() => {
         const fetchUsage = async () => {
+            setIsUsageLoading(true);
             try {
                 const res = await fetch(`http://127.0.0.1:8000/tenant/${tenantId}/usage`);
                 if (res.ok) {
@@ -93,9 +94,14 @@ export default function SettingsPage() {
                 }
             } catch (error) {
                 console.error("Failed to fetch usage stats:", error);
+            } finally {
+                setIsUsageLoading(false);
             }
         };
-        fetchUsage();
+
+        if (tenantId) {
+            fetchUsage();
+        }
     }, [tenantId]);
 
     // Team members state and fetch
@@ -525,38 +531,56 @@ export default function SettingsPage() {
                                 <CardTitle className="text-base">Uso do Workspace</CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-6">
-                                <div className="space-y-2">
-                                    <div className="flex justify-between text-xs">
-                                        <span className="text-zinc-400">Conversas / Mês</span>
-                                        <span className="text-white">{usageStats.conversations} / {usageStats.max_conversations.toLocaleString()}</span>
+                                {isUsageLoading ? (
+                                    <div className="space-y-6">
+                                        {[1, 2, 3].map((i) => (
+                                            <div key={i} className="space-y-2 animate-pulse">
+                                                <div className="flex justify-between">
+                                                    <div className="h-3 w-24 bg-white/10 rounded-md"></div>
+                                                    <div className="h-3 w-16 bg-white/10 rounded-md"></div>
+                                                </div>
+                                                <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                                    <div className="h-full bg-white/5 w-full"></div>
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
-                                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full bg-indigo-500 transition-all duration-1000"
-                                            style={{ width: `${Math.min((usageStats.conversations / usageStats.max_conversations) * 100, 100)}%` }}
-                                        />
-                                    </div>
-                                </div>
+                                ) : (
+                                    <>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-zinc-400">Conversas / Mês</span>
+                                                <span className="text-white">{usageStats.conversations} / {usageStats.max_conversations.toLocaleString()}</span>
+                                            </div>
+                                            <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                                <div
+                                                    className="h-full bg-indigo-500 transition-all duration-1000"
+                                                    style={{ width: `${Math.min((usageStats.conversations / usageStats.max_conversations) * 100, 100)}%` }}
+                                                />
+                                            </div>
+                                        </div>
 
-                                <div className="space-y-2">
-                                    <div className="flex justify-between text-xs">
-                                        <span className="text-zinc-400">Armazenamento (RAG)</span>
-                                        <span className="text-white">{usageStats.storage} / {usageStats.max_storage}</span>
-                                    </div>
-                                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                                        <div className="h-full bg-violet-600 w-[5%] transition-all duration-1000" />
-                                    </div>
-                                </div>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-zinc-400">Armazenamento (RAG)</span>
+                                                <span className="text-white">{usageStats.storage} / {usageStats.max_storage}</span>
+                                            </div>
+                                            <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                                <div className="h-full bg-violet-600 w-[5%] transition-all duration-1000" />
+                                            </div>
+                                        </div>
 
-                                <div className="space-y-2">
-                                    <div className="flex justify-between text-xs">
-                                        <span className="text-zinc-400">Membros da Equipe</span>
-                                        <span className="text-white">{usageStats.team} / Illimitado</span>
-                                    </div>
-                                    <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                                        <div className="h-full bg-emerald-500 w-[5%] transition-all duration-1000" />
-                                    </div>
-                                </div>
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-zinc-400">Membros da Equipe</span>
+                                                <span className="text-white">{usageStats.team} / Ilimitado</span>
+                                            </div>
+                                            <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                                <div className="h-full bg-emerald-500 w-[5%] transition-all duration-1000" />
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
                             </CardContent>
                         </Card>
                     </div>

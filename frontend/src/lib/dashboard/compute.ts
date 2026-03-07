@@ -98,12 +98,39 @@ export function computeFirstResponseSeconds(messages: Message[]) {
     return count > 0 ? totalSeconds / count : 0;
 }
 
+const TOPIC_TRANSLATIONS: Record<string, string> = {
+    "general": "Dúvidas gerais",
+    "greeting": "Saudações",
+    "checkout_error": "Problemas no checkout",
+    "cart_retry": "Recuperação de carrinho",
+    "product_link": "Dúvidas sobre link do produto",
+    "purchase_intent": "Intenção de compra",
+    "search_product": "Busca por produtos",
+    "select_product": "Seleção de produto",
+    "select_variant": "Dúvida sobre variante do produto",
+    "add_to_cart": "Dúvida sobre carrinho",
+    "view_cart": "Verificação de carrinho",
+    "store_question": "Dúvidas sobre a loja/políticas",
+    "shipping_question": "Dúvidas sobre frete/prazo",
+    "payment_question": "Dúvidas sobre pagamento",
+    "return_exchange": "Trocas e devoluções",
+    "order_status": "Status do pedido",
+    "order_tracking": "Rastreamento do pedido",
+    "order_complaint": "Reclamações sobre pedido",
+    "provide_order_id": "Informação de número do pedido",
+    "provide_email": "Informação de email",
+    "media_unsupported": "Envio de mídia não suportada",
+    "unknown": "Não reconhecido"
+};
+
 export function computeTopics(messages: Message[]) {
     const topicCounts: Record<string, number> = {};
 
     messages.forEach(m => {
         if (m.intent && m.intent !== 'unknown') {
-            topicCounts[m.intent] = (topicCounts[m.intent] || 0) + 1;
+            // Translate the intent to a readable name, fallback to original if not mapped
+            const readableTopic = TOPIC_TRANSLATIONS[m.intent] || m.intent;
+            topicCounts[readableTopic] = (topicCounts[readableTopic] || 0) + 1;
         }
     });
 
@@ -124,4 +151,22 @@ export function computeResolutionRate(conversations: { status: string }[]) {
     const resolved = conversations.filter(c => c.status !== 'handoff').length;
 
     return (resolved / total) * 100;
+}
+
+export function computeTimeSaved(conversations: { status: string }[]) {
+    if (!conversations || conversations.length === 0) return { hours: 0, minutes: 0, daysEquivalency: 0 };
+
+    const resolved = conversations.filter(c => c.status !== 'handoff').length;
+
+    // Média de mercado: 8 minutos por ticket de chat
+    const minutesPerTicket = 8;
+    const totalMinutes = resolved * minutesPerTicket;
+
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+
+    // Assumindo 8 horas de trabalho por dia para um colaborador humano
+    const daysEquivalency = (totalMinutes / 60 / 8).toFixed(1);
+
+    return { hours, minutes, daysEquivalency: Number(daysEquivalency) };
 }
