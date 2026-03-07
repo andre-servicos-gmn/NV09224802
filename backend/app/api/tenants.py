@@ -12,6 +12,9 @@ import uuid
 
 from app.core.supabase_client import get_supabase
 from app.core.database import resolve_tenant_uuid
+from app.core.tenancy import TenantRegistry
+from app.rag_engine.retriever import VectorRetriever
+from app.sync.sync_service import SyncService
 
 logger = logging.getLogger(__name__)
 
@@ -611,3 +614,64 @@ async def get_usage_stats(tenant_id: str):
         logger.error(f"Failed to get usage stats: {e}")
         # Return fallback/empty stats rather than 500
         return {"success": False, "message": str(e), "data": stats}
+
+@router.get("/tenant/{tenant_id}/products", response_model=dict)
+async def get_tenant_products(tenant_id: str, limit: int = 100):
+    """
+    Get synchronized products for the tenant.
+    """
+    tenant_uuid = resolve_tenant_uuid(tenant_id)
+    
+    try:
+        retriever = VectorRetriever()
+        products = retriever.list_products(tenant_id=tenant_uuid, limit=limit)
+        
+        return {
+            "success": True,
+            "data": products
+        }
+    except Exception as e:
+        logger.error(f"Failed to list products: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tenant/{tenant_id}/products/sync", response_model=dict)
+async def sync_tenant_products(tenant_id: str):
+    """
+    Trigger manual synchronization of products from Shopify.
+    """
+    tenant_uuid = resolve_tenant_uuid(tenant_id)
+    
+    try:
+        registry = TenantRegistry()
+        tenant = registry.get(tenant_id, use_cache=False)
+        
+        if not tenant.shopify_access_token or not tenant.store_domain:
+            return {
+                "success": False, 
+                "message": "Integração Shopify não está configurada para este workspace."
+            }
+            
+        credentials = {
+            "store_domain": tenant.store_domain,
+            "access_token": tenant.shopify_access_token,
+            "api_version": getattr(tenant, "shopify_api_version", "2024-01"),
+            "webhook_secret": getattr(tenant, "webhook_secret", None)
+        }
+        
+        sync_service = SyncService()
+        result = sync_service.sync_full_catalog(
+            tenant_id=tenant_uuid,
+            platform="shopify",
+            credentials=credentials,
+            batch_size=50
+        )
+        
+        return {
+            "success": True,
+            "message": "Sincronização concluída com sucesso.",
+            "data": result
+        }
+    except Exception as e:
+        logger.error(f"Failed to sync products: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

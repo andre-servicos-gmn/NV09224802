@@ -237,7 +237,7 @@ class VectorRetriever:
         """
         result = (
             self.supabase.table("product_embeddings")
-            .select("id, title, description, price, image_url, in_stock, platform, external_id, synced_at")
+            .select("id, title, description, price, image_url, in_stock, platform, external_id, synced_at, updated_at")
             .eq("tenant_id", tenant_id)
             .order("title")
             .limit(limit)
