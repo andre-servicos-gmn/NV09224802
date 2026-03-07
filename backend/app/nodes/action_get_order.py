@@ -188,14 +188,12 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
     order = None
     identified_by = None
-
     # Limpar contexto de outros domínios para não contaminar a resposta
     state.selected_products = []
     state.available_variants = []
-    if "checkout_link" in state.soft_context:
-        del state.soft_context["checkout_link"]
     if "search_query" in state.soft_context:
         del state.soft_context["search_query"]
+
 
     # --- Estratégia 1: Telefone do WhatsApp (abordagem invisível) ---
     phone = state.customer_phone or state.soft_context.get("customer_phone_raw")
