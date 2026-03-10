@@ -221,6 +221,14 @@ def _get_whatsapp_adapter(tenant) -> WhatsAppAdapterBase | None:
             api_key=tenant.whatsapp_api_key,
             instance_name=tenant.whatsapp_instance_name or "default",
         )
+        
+    if tenant.whatsapp_provider == "twilio":
+        from app.adapters.twilio_adapter import TwilioAdapter
+        return TwilioAdapter(
+            instance_url=tenant.whatsapp_instance_url, # Twilio Phone Number
+            api_key=tenant.whatsapp_api_key,           # Auth Token
+            instance_name=tenant.whatsapp_instance_name # Account SID
+        )
     
     return None
 
@@ -670,10 +678,10 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             tenant = TenantConfig(
                 tenant_id="demo",
                 name="Demo Store",
-                whatsapp_provider="evolution",
-                whatsapp_instance_url="https://nouvaris-evolution-api.ojdb99.easypanel.host",
-                whatsapp_api_key="3507B4BFABD9-4F3B-B87E-E441338CF369",
-                whatsapp_instance_name="nouvaris",
+                whatsapp_provider="twilio",
+                whatsapp_instance_url=os.getenv("TWILIO_PHONE_NUMBER", "+14155238886"), # Twilio Phone Number
+                whatsapp_api_key=os.getenv("TWILIO_AUTH_TOKEN", "REPLACE_ME"), # Auth Token
+                whatsapp_instance_name=os.getenv("TWILIO_ACCOUNT_SID", "AC00000000000000000000000000000000"), # Account SID
                 active=True
             )
         else:
@@ -715,9 +723,14 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     
     # Parse payload
     try:
-        payload = await request.json()
+        content_type = request.headers.get("content-type", "")
+        if "application/x-www-form-urlencoded" in content_type:
+            form_data = await request.form()
+            payload = dict(form_data)
+        else:
+            payload = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        raise HTTPException(status_code=400, detail="Invalid payload formatting")
     
     # Parse incoming message
     message = adapter.parse_incoming_message(payload)

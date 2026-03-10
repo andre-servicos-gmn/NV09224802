@@ -44,7 +44,7 @@ def test_products_in_db():
     sb = get_supabase()
     
     result = sb.table("product_embeddings").select(
-        "product_id,title,in_stock"
+        "id,title,in_stock"
     ).eq("tenant_id", TENANT_UUID).limit(20).execute()
     
     print(f"📦 Found {len(result.data)} products:")
@@ -58,4 +58,5 @@ if __name__ == "__main__":
     test_products_in_db()
     
     # Test RAG search  
-    test_rag_search("colar summer")
+    query = sys.argv[1] if len(sys.argv) > 1 else "colar summer"
+    test_rag_search(query)

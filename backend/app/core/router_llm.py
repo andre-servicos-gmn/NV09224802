@@ -1,4 +1,4 @@
-# Modified: improved router prompt with better context and examples.
+# Modified: Router for consultant mode — no cart/purchase intents.
 """LLM-powered intent/domain classification router.
 
 Uses OpenAI to classify user messages into domain/intent with entity extraction.
@@ -18,12 +18,12 @@ from app.core.llm_utils import normalize_token_usage
 
 
 # =============================================================================
-# CONFIDENCE THRESHOLDS (increased for better accuracy)
+# CONFIDENCE THRESHOLDS
 # =============================================================================
 
-MIN_CONFIDENCE = 0.75      # Minimum to accept LLM result
-HIGH_CONFIDENCE = 0.85     # Skip sanity check if above this
-AMBIGUOUS_THRESHOLD = 0.75 # Below this = ambiguous
+MIN_CONFIDENCE = 0.75
+HIGH_CONFIDENCE = 0.85
+AMBIGUOUS_THRESHOLD = 0.75
 
 
 # =============================================================================
@@ -53,83 +53,69 @@ class RouterResult(BaseModel):
 
 
 # =============================================================================
-# IMPROVED SYSTEM PROMPT
+# SYSTEM PROMPT — MODO CONSULTOR
 # =============================================================================
 
 ROUTER_SYSTEM_PROMPT = """## MISSÃO
-Sua tarefa é identificar a intenção do cliente de um e-commerce no WhatsApp.
-Em vez de buscar palavras-chave, analise o MOMENTO e o OBJETIVO da jornada do usuário.
+Você é o roteador de um assistente consultor de produtos de um e-commerce no WhatsApp.
+O assistente NÃO realiza vendas, NÃO gera links de carrinho e NÃO processa pagamentos.
+Ele apenas tira dúvidas sobre produtos, ajuda a descobrir o catálogo e esclarece informações.
 
-## DOMÍNIOS E LÓGICA DE NEGÓCIO
+## DOMÍNIOS
 
-1. **SALES** (Foco: Conversão e Produto)
-   - O usuário está no "topo ou meio do funil".
-   - Ele quer descobrir o que existe, tirar dúvidas sobre um item (material, cor, tamanho) ou avançar para o pagamento.
-   - Pense: "O usuário quer gastar dinheiro ou saber sobre o que pode comprar?"
-   - **Regra de Ouro**: Se o contexto já é sobre um produto e o usuário faz perguntas curtas ("é de ouro?", "tem G?", "qual o preço?"), MANTENHA em SALES.
+1. **SALES** (Foco: Consultoria de Produto)
+   - O usuário quer descobrir produtos, tirar dúvidas sobre itens (material, cor, tamanho, preço) ou entender o catálogo.
+   - Pense: "O usuário quer saber mais sobre produtos?"
+   - **REGRA DE OURO — Continuidade**: Se produtos JÁ foram apresentados (has_selected_products=true) e a mensagem é curta, uma pergunta ou comentário (ex: "pq brinco", "legal", "tem em prata?"), classifique como **general**. Use **search_product** APENAS quando o usuário pede algo NOVO explicitamente.
 
 2. **SUPPORT** (Foco: Pós-Venda)
-   - O usuário já tem um vínculo transacional (um pedido feito ou tentado).
-   - Ele está ansioso, reclamando ou buscando informação de algo que já "é dele".
-   - Pense: "O usuário está rastreando um valor que já saiu do bolso dele?"
-   - **Regra de Ouro**: Se mencionar status de entrega, atrasos ou defeitos, é SUPPORT.
+   - O usuário já tem um pedido e quer rastreio, reclama de atraso ou defeito.
+   - **Regra de Ouro**: Se mencionar pedido, entrega, atraso ou defeito → SUPPORT.
 
 3. **STORE_QA** (Foco: Institucional)
-   - Dúvidas genéricas que não dependem do catálogo de produtos nem de um CPF/Pedido.
-   - Perguntas sobre regras da empresa (horário, política de troca, localização).
-   - Pense: "Isso é uma regra da empresa ou uma dúvida sobre um objeto específico?"
-   - **⚠️ ATENÇÃO**: Perguntas sobre "produtos", "catálogo", "o que vocês vendem", "quais produtos têm" são SALES (search_product), NÃO store_qa!
+   - Dúvidas sobre regras da empresa (horário, troca, endereço).
+   - ⚠️ "Quais produtos vocês têm?" é SALES (search_product), não store_qa.
 
 ---
 
-## INTENTS (Referência Técnica)
+## INTENTS
 
-### SALES GRUPO (Priorize se cliente já está discutindo produto)
-- **purchase_intent**: SINAL DE COMPRA! Exemplos: "quero comprar", "bora fechar", "vou levar", "quero esse", "quero garantir", "pode mandar o link", "me manda", "sim, quero", "fecha", "bora", "aceito", "tô dentro", "manda o pix"
-  → Se cliente CONFIRMOU interesse ("quero", "sim", "bora") após ver produto = purchase_intent
-- **product_link**: URL de produto
-- **search_product**: Busca de itens, catálogo, perguntas sobre "o que vocês têm", "quais produtos", "me mostra", "quero ver produtos" ou especificidades de um produto (cor, material, tamanho). Também: "produtos da loja", "o que vendem", "catálogo"
-- **select_product**: Escolha entre opções ("o primeiro", "esse")
-- **select_variant**: Escolha de variação ("azul", "tamanho M")
-- **add_to_cart**: Adicionar ao carrinho
-- **cart_retry**: Pedir link novamente
-- **checkout_error**: Erro no pagamento
-- **greeting**: Oi, Olá (Início de conversa = Venda)
-- **general**: Conversa fiada (Manter engajamento = Venda)
+### SALES
+- **search_product**: Busca de produtos, catálogo, dúvidas sobre especificidades de um item (cor, material, tamanho, preço). Ex: "tem colar de ouro?", "quais produtos vocês têm?", "é de prata?", "tem no tam G?"
+- **greeting**: Início de conversa. Ex: "oi", "olá", "bom dia"
+- **general**: Conversa de contexto, comentários, perguntas curtas sobre produto já apresentado. Ex: "legal", "me conta mais", "pq esse?"
 
-### SUPPORT GRUPO
-- **order_status**: Rastreio, onde está
-- **order_tracking**: Pedir código
-- **order_complaint**: Reclamação de atraso/defeito
-- **provide_order_id**: Número do pedido
+### SUPPORT
+- **order_status**: Rastreio, onde está meu pedido
+- **order_tracking**: Pedir código de rastreio
+- **order_complaint**: Reclamação de atraso ou defeito
+- **provide_order_id**: Número do pedido fornecido pelo cliente
 - **provide_email**: Email do cliente
 
-### STORE_QA GRUPO
-- **store_question**: Horários, endereço
-- **shipping_question**: Frete geral (não de pedido específico)
-- **payment_question**: Formas de pagamento
-- **return_exchange**: Regras de devolução
-- **media_unsupported**: Arquivos de mídia
+### STORE_QA
+- **store_question**: Horários, endereço, informações institucionais
+- **shipping_question**: Dúvidas gerais sobre frete (não de pedido específico)
+- **payment_question**: Formas de pagamento aceitas
+- **return_exchange**: Política de troca e devolução
+- **media_unsupported**: Mensagens de áudio, imagem ou vídeo
 
 ---
 
 ## ENTIDADES A EXTRAIR
 - `order_id`: Sequência numérica (3-8 dígitos)
 - `email`: Formato de email
-- `product_url`: Links da loja
-- `search_query`: O termo de busca (ex: "colar de ouro" em "quero um colar de ouro")
+- `search_query`: Termo de busca (ex: "colar de ouro" em "quero um colar de ouro")
 
 ---
 
-## OUTPUT FORMAT (JSON Obrigatório)
-Retorne APENAS JSON válido, sem markdown:
+## OUTPUT FORMAT (JSON obrigatório, sem markdown)
 {
   "domain": "sales|support|store_qa",
   "intent": "<intent_name>",
   "confidence": 0.0-1.0,
   "ambiguous": true|false,
   "entities": {"..."},
-  "rationale": "Explique o raciocínio: 'Usuário está no meio do funil perguntando sobre material...'"
+  "rationale": "Explique resumidamente o raciocínio."
 }
 """
 
@@ -139,75 +125,60 @@ Retorne APENAS JSON válido, sem markdown:
 # =============================================================================
 
 def _build_intent_reference(intents: list[str]) -> str:
-    """Build intent reference list."""
     lines = []
     for intent in intents:
-        description = INTENT_DESCRIPTIONS.get(intent, "No description.")
-        lines.append(f"- {intent}: {description}")
+        description = INTENT_DESCRIPTIONS.get(intent, "")
+        lines.append(f"- {intent}: {description}" if description else f"- {intent}")
     return "\n".join(lines)
 
 
 def _build_conversation_context(context: dict | None) -> str:
-    """Build conversation context block."""
     if not context:
         return "Nenhum contexto anterior."
-    
+
     lines = []
-    
-    # Key context flags
+
     if context.get("has_selected_products"):
         count = context.get("selected_products_count", 0)
-        lines.append(f"✓ Produtos selecionados: {count}")
+        lines.append(f"✓ Produtos em contexto: {count}")
         if context.get("last_products_discussed"):
             lines.append(f"  → {context['last_products_discussed']}")
-    
-    if context.get("has_variant_id"):
-        lines.append("✓ Variante já escolhida")
-    
+
     if context.get("has_order_id"):
         lines.append("✓ Order ID já fornecido")
-    
+
     if context.get("last_domain"):
         lines.append(f"• Último domain: {context['last_domain']}")
-    
+
     if context.get("last_intent"):
         lines.append(f"• Último intent: {context['last_intent']}")
-    
+
     if context.get("store_name"):
         lines.append(f"• Loja: {context['store_name']}")
-    
+
     if context.get("store_niche"):
         lines.append(f"• Nicho: {context['store_niche']}")
-    
+
     return "\n".join(lines) if lines else "Nenhum contexto relevante."
 
 
 def _build_user_prompt(message: str, intents: list[str], context: dict | None) -> str:
-    """Build the user prompt with message and context."""
     intent_lines = _build_intent_reference(intents)
     context_block = _build_conversation_context(context)
-    
-    # Check for obvious patterns to help the LLM
+
     hints = []
-    
-    # URL detection
-    if re.search(r'https?://\S+', message):
-        hints.append("⚠️ Mensagem contém URL")
-    
-    # Number-only detection
+
     if re.match(r'^\d{3,8}$', message.strip()):
         hints.append("⚠️ Mensagem é apenas um número (provável order_id)")
-    
-    # Order keywords
+
     if any(w in message.lower() for w in ['pedido', 'rastreio', 'entrega', 'não chegou', 'atrasado']):
         hints.append("⚠️ Menciona termos de pedido/entrega")
-    
-    # Confirmation keywords
-    if re.match(r'^(sim|quero|esse|pode|ok|beleza|bora|yes|manda|claro|aceito)\W*$', message.lower().strip()):
-        hints.append("⚠️ Parece ser confirmação simples")
-    
-    hints_block = "\n".join(hints) if hints else ""
-    
+
+    if message.lower().strip().startswith(("[audio]", "[image]", "[video]", "[media]")):
+        hints.append("⚠️ Mensagem de mídia")
+
+    hints_block = "\n".join(hints)
+
     prompt = f"""## MENSAGEM DO USUÁRIO
 "{message}"
 
@@ -217,22 +188,19 @@ def _build_user_prompt(message: str, intents: list[str], context: dict | None) -
 ## INTENTS SUPORTADOS
 {intent_lines}
 """
-    
+
     if hints_block:
         prompt += f"""
 ## OBSERVAÇÕES AUTOMÁTICAS
 {hints_block}
 """
-    
-    prompt += """
----
-Retorne APENAS o JSON de classificação."""
-    
+
+    prompt += "\n---\nRetorne APENAS o JSON de classificação."
     return prompt
 
 
 # =============================================================================
-# MAIN CLASSIFICATION FUNCTION
+# MAIN CLASSIFICATION
 # =============================================================================
 
 def classify_with_llm(
@@ -241,21 +209,7 @@ def classify_with_llm(
     intents: tuple[str, ...],
     timeout_s: float | None = None,
 ) -> RouterResult:
-    """Classify message intent and domain using LLM.
-    
-    Args:
-        message: User message to classify
-        context: Conversation context (has_selected_products, last_domain, etc.)
-        intents: Supported intents tuple
-        timeout_s: Request timeout in seconds
-    
-    Returns:
-        RouterResult with domain, intent, confidence, entities
-    
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set
-        ValueError: If intents list invalid or LLM returns invalid JSON
-    """
+    """Classify message intent and domain using LLM."""
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not set.")
     if not intents:
@@ -265,22 +219,21 @@ def classify_with_llm(
             raise ValueError(f"Unsupported intent: {intent}")
 
     llm = ChatOpenAI(
-        model=get_model_name(), 
-        temperature=0, 
-        request_timeout=timeout_s
+        model=get_model_name(),
+        temperature=0,
+        request_timeout=timeout_s,
     )
-    
-    system_prompt = ROUTER_SYSTEM_PROMPT
+
     user_prompt = _build_user_prompt(message, list(intents), context)
-    
+
     result = llm.invoke([
-        SystemMessage(content=system_prompt), 
-        HumanMessage(content=user_prompt)
+        SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+        HumanMessage(content=user_prompt),
     ])
-    
+
     content = (result.content or "").strip()
-    
-    # Clean markdown code blocks if present
+
+    # Strip markdown fences if present
     if content.startswith("```json"):
         content = content[7:]
     if content.startswith("```"):
@@ -288,31 +241,28 @@ def classify_with_llm(
     if content.endswith("```"):
         content = content[:-3]
     content = content.strip()
-    
+
     try:
         router_result = RouterResult.model_validate_json(content)
-        
-        # Capture token usage
         usage_raw = result.response_metadata.get("token_usage")
         router_result.token_usage = normalize_token_usage(usage_raw)
-        
         return router_result
-        
+
     except ValidationError as exc:
         raise ValueError(f"Invalid router JSON: {content[:200]}") from exc
 
 
 # =============================================================================
-# QUICK HEURISTIC CLASSIFICATION (for obvious cases)
+# QUICK HEURISTIC CLASSIFICATION
 # =============================================================================
 
 def classify_heuristic(message: str, context: dict | None = None) -> RouterResult | None:
     """Quick heuristic classification for obvious patterns.
-    
+
     Returns None if no obvious pattern found (should use LLM).
     """
     msg_lower = message.lower().strip()
-    
+
     # Media messages
     if msg_lower.startswith(("[audio]", "[image]", "[video]", "[media]")):
         return RouterResult(
@@ -322,7 +272,7 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
             ambiguous=False,
             rationale="Media message detected",
         )
-    
+
     # Number-only (order_id)
     if re.match(r'^\d{3,8}$', msg_lower):
         return RouterResult(
@@ -333,7 +283,7 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
             entities={"order_id": msg_lower},
             rationale="Number-only message",
         )
-    
+
     # Email-only
     email_match = re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', msg_lower)
     if email_match:
@@ -345,63 +295,54 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
             entities={"email": msg_lower},
             rationale="Email-only message",
         )
-    
-    # URL with products
-    url_match = re.search(r'https?://\S*products/\S+', message)
-    if url_match:
-        return RouterResult(
-            domain="sales",
-            intent="product_link",
-            confidence=0.95,
-            ambiguous=False,
-            entities={"product_url": url_match.group(0)},
-            rationale="Product URL detected",
-        )
-    
-    # ==========================================================================
-    # CRITICAL: Simple confirmation with product context → purchase_intent
-    # When user says "sim", "quero", "bora", etc. AND there are selected products,
-    # this is a PURCHASE CONFIRMATION. Skip LLM and route directly to generate link.
-    # ==========================================================================
-    confirmation_patterns = [
-        r'^(sim|quero|esse|pode|ok|beleza|bora|yes|manda|claro|aceito|isso|fechou?|vou levar|quero esse|pode ser|manda o link|gera o link|me manda|por favor|pfv|pf)\W*$',
-        r'^(sim|quero),?\s*(por favor|pfv|pode)?\W*$',
-        r'^gera\s*(o link|pra mim)?\W*$',
-        r'^manda\s*(o link|pra mim|ai)?\W*$',
-    ]
-    
+
+    # ======================================================================
+    # CONTINUITY GUARD HEURÍSTICO: mensagem curta com produtos em contexto
+    # → general, não search_product
+    # ======================================================================
     has_products = context and context.get("has_selected_products")
-    
-    for pattern in confirmation_patterns:
-        if re.match(pattern, msg_lower, re.IGNORECASE):
-            if has_products:
-                return RouterResult(
-                    domain="sales",
-                    intent="purchase_intent",
-                    confidence=0.98,
-                    ambiguous=False,
-                    rationale="Simple confirmation with product context → purchase",
-                )
-    
-    # ==========================================================================
-    # Link request with product name ("gere o link do silver threader")
-    # When products are already selected and user requests a link for a specific
-    # product, classify as purchase_intent to avoid LLM misclassifying as search.
-    # ==========================================================================
-    link_request_patterns = [
-        r'(?:ger[ea]|manda|quero|envia)\s+(?:o\s+)?link',   # "gere o link", "manda o link"
-        r'link\s+(?:do|da|de|para)\s+',                      # "link do...", "link da..."  
-        r'quero\s+(?:o\s+)?(?:do|da|de)\s+',                 # "quero o do..."
-        r'(?:ger[ea]|manda)\s+(?:do|da|de)\s+',              # "gere do silver threader"
-    ]
-    if has_products and any(re.search(p, msg_lower) for p in link_request_patterns):
+
+    SHORT_FOLLOWUP = re.compile(
+        r'^(pq|por que|porque|como|qual|quanto|é|faz|serve|vale|gostei|'
+        r'esse|esse mesmo|esse que|achei|legal|bacana|interessante|bom|gosto|'
+        r'me conta mais|fala mais|me diz|não entendi|tem em|tem no|'
+        r'e o|e a|e esse|e essa|e tem)\b',
+        re.IGNORECASE,
+    )
+
+    if has_products and (len(msg_lower) < 40 or SHORT_FOLLOWUP.match(msg_lower)):
         return RouterResult(
             domain="sales",
-            intent="purchase_intent",
+            intent="general",
             confidence=0.95,
             ambiguous=False,
-            rationale="Link request with product context → purchase_intent",
+            rationale="Short follow-up with product context → general",
         )
-    
-    # No obvious pattern, use LLM
+    # ======================================================================
+    # CATALOG BROWSING → search_product
+    # ======================================================================
+    product_catalog_patterns = [
+        r'(?:quais|quai|qual)\s+(?:s[aã]o\s+)?(?:os\s+)?(?:produtos|itens|peças)',
+        r'(?:o\s+que|oque)\s+(?:voc[eê]s?\s+)?(?:vendem?|t[eê]m)',
+        r'(?:mostr[ea]|ver|vejo|veja)\s+(?:os?\s+)?(?:produtos|catálogo|catalogo|itens|peças)',
+        r'(?:cat[aá]logo|catalogo|vitrine)',
+        r'(?:produtos\s+(?:da\s+loja|dispon[ií]veis?|venda))',
+        r'(?:tem\s+(?:algum|algo|produtos?))',
+        r'(?:quero\s+ver\s+(?:os?\s+)?(?:produtos?|itens|peças))',
+        r'(?:me\s+mostr[ae]\s+(?:os?\s+)?(?:produtos?|itens|peças))',
+        r'(?:o\s+que\s+tem\s+(?:na\s+loja|pra\s+vender|para\s+vender))',
+    ]
+
+    for pattern in product_catalog_patterns:
+        if re.search(pattern, msg_lower):
+            return RouterResult(
+                domain="sales",
+                intent="search_product",
+                confidence=0.95,
+                ambiguous=False,
+                entities={"search_query": message.strip()},
+                rationale="Product catalog/browsing query detected",
+            )
+
+    # No obvious pattern — use LLM
     return None

@@ -268,7 +268,7 @@ RESPONSE_SYNTHESIZER_PROMPT = """Você é uma atendente real de WhatsApp da {ten
 
 Seu nome não importa — o que importa é que você fala como gente de verdade.
 
----
+---b
 
 ## TOM DE VOZ
 {brand_voice}
@@ -513,14 +513,35 @@ def _get_system_data_payload(
                 
                 lines.append("\n   (NÃO liste outros produtos. Foque neste.)")
         
-        # PRIORITY 3: No focus - Vitrine mode - show list for selection
-        elif state.selected_products:
-            lines.append("\n🛒 PRODUTOS ENCONTRADOS (Vitrine):")
-            for idx, p in enumerate(state.selected_products, 1):
-                title = p.get("title", "Produto")
-                price = _format_price(p.get("price"))
-                lines.append(f"   {idx}. {title} - {price}")
-            lines.append("   (O cliente pode escolher ou perguntar sobre um deles)")
+        # PRIORITY 3: No focus - auto-foca se só há 1 produto (evita loop de repetição)
+        if not focused_product and state.selected_products:
+            if len(state.selected_products) == 1:
+                # Único produto em contexto → trata como foco para passar a descrição completa
+                auto_focus = state.selected_products[0]
+                state.soft_context["focused_product_id"] = str(
+                    auto_focus.get("product_id") or auto_focus.get("id")
+                )
+                title = auto_focus.get("title", "Produto")
+                price = _format_price(auto_focus.get("price"))
+                description = auto_focus.get("description", "")
+
+                lines.append(f"\n🎯 PRODUTO EM CONTEXTO:")
+                lines.append(f"   Nome: {title}")
+                lines.append(f"   Preço: {price}")
+                if description:
+                    lines.append(f"   📋 DESCRIÇÃO TÉCNICA: {description}")
+                    lines.append("   ⚠️ Use a descrição acima para responder perguntas sobre o produto.")
+                    lines.append("   ⚠️ Se a informação não estiver aqui, diga: 'Não tenho essa informação específica'.")
+                else:
+                    lines.append("   (Sem descrição detalhada disponível)")
+            else:
+                # Múltiplos produtos → vitrine para seleção
+                lines.append("\n🛒 PRODUTOS ENCONTRADOS (Vitrine):")
+                for idx, p in enumerate(state.selected_products, 1):
+                    title = p.get("title", "Produto")
+                    price = _format_price(p.get("price"))
+                    lines.append(f"   {idx}. {title} - {price}")
+                lines.append("   (O cliente pode escolher ou perguntar sobre um deles)")
         
         # Search Results Context
         if state.last_action == "action_search_products":
