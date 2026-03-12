@@ -187,7 +187,17 @@ async def send_human_message(conversation_id: str, request: SendMessageRequest):
                 error="Falha ao salvar mensagem"
             )
         
-        # 3. Send via WhatsApp if applicable
+        # 3. If the conversation was in 'handoff', replying to it means a human has taken over. Change to 'human_active'.
+        if conv.data.get("status") == "handoff":
+            supabase.table("conversations").update({
+                "status": "human_active"
+            }).eq("id", conversation_id).execute()
+            
+            # Inform frontend that status changed
+            # (Optional locally, but it ensures frontend refreshes perfectly if it pulls from this response)
+            # Actually, the Realtime listener will catch the postgres_change globally for the Handoffs badge!
+        
+        # 4. Send via WhatsApp if applicable
         channel = conv.data.get("channel")
         phone_number = conv.data.get("number")
         tenant_id = conv.data.get("tenant_id")

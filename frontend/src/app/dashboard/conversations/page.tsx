@@ -54,10 +54,22 @@ type Tab = "active" | "handoff" | "closed";
 type PageSize = 30 | 50 | 100;
 
 export default function ConversationsPage() {
-    const { tenantId } = useTenant();
+    const { tenantId, pendingHandoffs, markHandoffsSeen } = useTenant();
     const { showToast } = useToast();
 
+    // Mark that we've seen the conversations page so the red dot goes away globally
+    useEffect(() => {
+        markHandoffsSeen();
+    }, [markHandoffsSeen]);
+
     const [tab, setTab] = useState<Tab>("active");
+
+    // Controling active tab inside a ref prevents async race conditions
+    const activeTabRef = useRef<Tab>("active");
+    useEffect(() => {
+        activeTabRef.current = tab;
+    }, [tab]);
+
     const [pageSize, setPageSize] = useState<PageSize>(50);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(false);
@@ -88,21 +100,30 @@ export default function ConversationsPage() {
     const fetchConversations = async (pageNum: number = page) => {
         if (!tenantId) return;
 
+        const currentTab = activeTabRef.current;
+
         setLoadingConversations(true);
         setError(null);
 
         try {
             const offset = (pageNum - 1) * pageSize;
-            const res = await fetch(`${BACKEND_URL}/conversations?tenant_id=${tenantId}&tab=${tab}&limit=${pageSize}&offset=${offset}`);
+            const res = await fetch(`${BACKEND_URL}/conversations?tenant_id=${tenantId}&tab=${currentTab}&limit=${pageSize}&offset=${offset}`);
             if (!res.ok) throw new Error("Failed to fetch conversations");
             const data = await res.json();
+
+            // Rejeitar respostas antigas que chegaram após a troca de aba
+            if (activeTabRef.current !== currentTab) return;
+
             setConversations(data.data || []);
             setHasMore(data.has_more || false);
         } catch (err) {
+            if (activeTabRef.current !== currentTab) return;
             setError("Erro ao carregar conversas");
             showToast("error", "Erro ao carregar conversas");
         } finally {
-            setLoadingConversations(false);
+            if (activeTabRef.current === currentTab) {
+                setLoadingConversations(false);
+            }
         }
     };
 
@@ -145,8 +166,12 @@ export default function ConversationsPage() {
                     if (prev.some(m => m.id === newMessage.id)) return prev;
                     return [...prev, newMessage];
                 });
-                setMessageInput("");
                 setTimeout(scrollToBottom, 100);
+
+                // Auto-transition selected conversation from handoff to human_active locally
+                if (selectedConversation.status === "handoff") {
+                    setSelectedConversation(prev => prev ? { ...prev, status: "human_active" } : null);
+                }
             } else {
                 showToast("error", data.error || "Erro ao enviar mensagem");
             }
@@ -378,13 +403,20 @@ export default function ConversationsPage() {
                         </button>
                         <button
                             onClick={() => setTab("handoff")}
-                            className={`flex-1 py-2 px-2 text-xs font-medium rounded-md transition-all ${tab === "handoff"
+                            className={`flex flex-1 items-center justify-center gap-1.5 py-2 px-2 text-xs font-medium rounded-md transition-all ${tab === "handoff"
                                 ? "bg-yellow-500/20 text-yellow-400"
                                 : "text-zinc-400 hover:text-white"
                                 }`}
                         >
                             Handoffs
+                            {pendingHandoffs > 0 && (
+                                <span className={`inline-flex items-center justify-center min-w-[16px] h-4 text-[10px] font-bold rounded-full px-1 ${tab === "handoff" ? "bg-yellow-500 text-yellow-950" : "bg-red-500 text-white"
+                                    }`}>
+                                    {pendingHandoffs > 99 ? '99+' : pendingHandoffs}
+                                </span>
+                            )}
                         </button>
+
                         <button
                             onClick={() => setTab("closed")}
                             className={`flex-1 py-2 px-2 text-xs font-medium rounded-md transition-all ${tab === "closed"

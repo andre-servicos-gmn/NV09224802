@@ -29,7 +29,7 @@ const navigation = [
 
 export function Sidebar() {
     const pathname = usePathname();
-    const { logoUrl, companyName } = useTenant();
+    const { logoUrl, companyName, pendingHandoffs, hasUnseenHandoffs } = useTenant();
 
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -70,7 +70,7 @@ export function Sidebar() {
                                 key={item.name}
                                 href={item.href}
                                 className={cn(
-                                    "flex items-center gap-2 px-3 py-1.5 rounded-md transition-all duration-200",
+                                    "flex items-center gap-2 px-3 py-1.5 rounded-md transition-all duration-200 relative",
                                     isActive
                                         ? "bg-white/[0.08] text-white"
                                         : "text-white/40 hover:text-white hover:bg-white/[0.04]"
@@ -83,6 +83,9 @@ export function Sidebar() {
                                     )}
                                 />
                                 <span className="text-[13px] font-medium tracking-tight">{item.name}</span>
+                                {item.name === "Conversas" && hasUnseenHandoffs && (
+                                    <span className="ml-[6px] h-2 w-2 min-w-[8px] bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
+                                )}
                             </Link>
                         );
                     })}
@@ -129,6 +132,9 @@ export function Sidebar() {
                                     )}
                                 />
                                 <span className="text-[15px] font-medium">{item.name}</span>
+                                {item.name === "Conversas" && hasUnseenHandoffs && (
+                                    <span className="ml-auto h-2 w-2 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
+                                )}
                             </Link>
                         );
                     })}

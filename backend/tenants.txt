@@ -1,0 +1,32 @@
+﻿[
+  {
+    "id": "73ee1a5c-1160-4a51-ba34-3fdddcd49f9e",
+    "tenant_id": null,
+    "name": "Nouvaris",
+    "whatsapp_instance_name": "nouvaRIS",
+    "whatsapp_instance_url": "https://nouva-evolution-api.mq8r4y.easypanel.host/",
+    "whatsapp_api_key": "6CA801B85467-405E-A9CB-175729D26ABF",
+    "whatsapp_provider": "evolution",
+    "active": true
+  },
+  {
+    "id": "b3dce93c-d5ca-42c4-861d-914c38fc3f64",
+    "tenant_id": null,
+    "name": "Nouvaris 2",
+    "whatsapp_instance_name": null,
+    "whatsapp_instance_url": null,
+    "whatsapp_api_key": null,
+    "whatsapp_provider": null,
+    "active": true
+  },
+  {
+    "id": "c35fe360-dc69-4997-9d1f-ae57f4d8a135",
+    "tenant_id": "demo",
+    "name": "demo",
+    "whatsapp_instance_name": "nouvaris",
+    "whatsapp_instance_url": "https://nouva-evolution-api.mq8r4y.easypanel.host/",
+    "whatsapp_api_key": "3579466BCA8B-49C6-AAF1-EA7943B40483",
+    "whatsapp_provider": "evolution",
+    "active": true
+  }
+]

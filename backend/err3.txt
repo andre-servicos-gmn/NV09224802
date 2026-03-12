@@ -1,0 +1,69 @@
+﻿C:\Users\emers\Desktop\
+Nouva\.venv\Scripts\pyt
+hon.exe : Traceback 
+(most recent call 
+last):
+No linha:1 caractere:1
++ C:\Users\emers\Deskto
+p\Nouva\.venv\Scripts\p
+ython.exe -m 
+app.api.main ...
++ ~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+~~
+    + CategoryInfo     
+         : NotSpecifi  
+  ed: (Traceback (mo   
+ st recent call las    
+t)::String) [], Re    
+moteException
+    + FullyQualifiedEr 
+   rorId : NativeComm  
+  andError
+ 
+  File "<frozen 
+runpy>", line 198, in 
+_run_module_as_main
+  File "<frozen 
+runpy>", line 88, in 
+_run_code
+  File "C:\Users\emers\
+Desktop\Nouva\backend\a
+pp\api\main.py", line 
+33, in <module>
+    from 
+app.api.webhooks 
+import router as 
+webhooks_router
+  File "C:\Users\emers\
+Desktop\Nouva\backend\a
+pp\api\webhooks.py", 
+line 49, in <module>
+    from 
+app.graphs.main_graph 
+import run_main_graph
+  File "C:\Users\emers\
+Desktop\Nouva\backend\a
+pp\graphs\main_graph.py
+", line 6, in <module>
+    from app.graphs.sto
+re_qa_graph import 
+run_store_qa_graph
+  File "C:\Users\emers\
+Desktop\Nouva\backend\a
+pp\graphs\store_qa_grap
+h.py", line 7, in 
+<module>
+    from app.nodes.stor
+e_qa_decide import 
+store_qa_decide
+  File "C:\Users\emers\
+Desktop\Nouva\backend\a
+pp\nodes\store_qa_decid
+e.py", line 21
+    <<<<<<< Updated 
+upstream
+    ^^
+SyntaxError: invalid 
+syntax
