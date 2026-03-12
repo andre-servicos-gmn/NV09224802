@@ -116,20 +116,15 @@ def action_search_products(
     import requests
     
     try:
-        # Limpar contexto de outros dominios - No longer needed as they are top-level or handled by router
+        # Limpar contexto de outros dominios
         state.tracking_url = None
         state.order_id = None
-        # ticket_id and order_status were in metadata, now maybe in soft_context or explicit fields if added. 
-        # For now, just clearing top-level fields is safer.
-
 
         query = (state.search_query or state.last_user_message or "").strip()
         state.search_query = query or None
         state.soft_context["search_query"] = query or None
         state.selected_products = []
         state.available_variants = []
-        # Removed: state.selected_product_id = None
-        # Removed: state.selected_variant_id = None
         state.soft_context["focused_product_id"] = None
         state.soft_context["selected_variant_id"] = None
         state.soft_context["search_results_count"] = 0
@@ -169,10 +164,7 @@ def action_search_products(
             state.soft_context["search_method"] = search_method
             
             # Check for variants in the top result
-            # We assume the first result is the most relevant one
             if results:
-                # Always focus on the first product for variant context if it has variants
-                # This allows specific queries like "colar summer" to immediately show variants
                 product = results[0]
                 if product.get("has_variants") and product.get("variants"):
                     state.soft_context["focused_product_id"] = product.get("product_id")
@@ -230,39 +222,6 @@ def action_search_products(
         state.bump_frustration()
 
     state.last_action = "search_products"
-    
-    # ==========================================================================
-    # ACTION CHAINING: Atalho de Compra
-    # Se busca retornou 1 produto específico E usuário quer comprar → gera link
-    # ==========================================================================
-    from app.core.constants import INTENT_PURCHASE_INTENT, INTENT_ADD_TO_CART
-    
-    if (state.last_action_success 
-        and state.selected_products 
-        and len(state.selected_products) == 1
-        and state.intent in [INTENT_PURCHASE_INTENT, INTENT_ADD_TO_CART]):
-        
-        product = state.selected_products[0]
-        variants = product.get("variants") or []
-        
-        # Se só tem 1 variante (ou nenhuma), auto-seleciona e vai direto pro link
-        if len(variants) <= 1:
-            if len(variants) == 1:
-                state.soft_context["selected_variant_id"] = str(variants[0].get("id"))
-                state.soft_context["selected_variant_title"] = variants[0].get("title", "Default")
-            else:
-                # Nenhuma variante = usa product_id como variant_id (Shopify default)
-                state.soft_context["selected_variant_id"] = str(product.get("product_id") or product.get("id"))
-                state.soft_context["selected_variant_title"] = product.get("title", "")
-            
-            logger.info(f"[SEARCH] ACTION CHAINING: 1 produto + purchase_intent → direct to generate_link")
-            state.next_step = "action_generate_link"
-            return state
-        
-        # Múltiplas variantes - precisa perguntar ao usuário
-        logger.info(f"[SEARCH] Produto único com {len(variants)} variantes - precisa seleção")
-        state.next_step = "respond"
-    else:
-        state.next_step = "respond"
-    
+    state.next_step = "respond"
+
     return state

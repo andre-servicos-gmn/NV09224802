@@ -28,7 +28,7 @@ class EvolutionAdapter(WhatsAppAdapterBase):
         super().__init__(instance_url, api_key, instance_name)
         self._client = httpx.AsyncClient(
             base_url=self.instance_url,
-            headers={"apikey": self.api_key, "Content-Type": "application/json"},
+            headers={"apikey": self.api_key.strip(), "Content-Type": "application/json"},
             timeout=30.0,
         )
         self._session_phone: Optional[str] = None

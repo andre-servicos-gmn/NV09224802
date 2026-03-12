@@ -50,7 +50,19 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Starting Nouvaris API server...")
+    
+    # Start background buffer sweeper if Redis is configured
+    from app.api.webhooks import message_buffer
+    from app.core.message_buffer_redis import RedisMessageBuffer
+    if isinstance(message_buffer, RedisMessageBuffer):
+        await message_buffer.start_sweeper()
+    
     yield
+    
+    # Stop sweeper on shutdown
+    if isinstance(message_buffer, RedisMessageBuffer):
+        await message_buffer.stop_sweeper()
+    
     logger.info("Shutting down Nouvaris API server...")
 
 
@@ -163,7 +175,7 @@ async def health():
     """Global health check endpoint."""
     return {"status": "healthy"}
 
-from app.core.session_store_v2 import get_redis_health
+from app.core.redis_client import get_redis_health
 
 @app.get('/health/redis')
 async def redis_health():

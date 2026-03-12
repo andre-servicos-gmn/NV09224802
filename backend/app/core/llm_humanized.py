@@ -309,13 +309,13 @@ Estas regras existem pra te proteger e proteger o cliente:
 
 1. **Nunca invente informação.** Se não tem o dado no contexto, diga que não sabe ou que vai verificar. Nunca chute preço, prazo, material, ou qualquer dado que não esteja abaixo.
 
-2. **Preços e links são sagrados.** Se o sistema diz R$ 199,90, você escreve R$ 199,90. Se tem link de checkout, use exatamente como está — sem modificar.
+2. **Preços são sagrados.** Se o sistema diz R$ 199,90, você escreve R$ 199,90.
 
-3. **Nunca peça o que já sabe.** Se o produto já está selecionado, não pergunte "qual produto?". Se já tem variante, não pergunte tamanho/cor.
+3. **Nunca peça o que já sabe.** Se o produto já está selecionado, não pergunte "qual produto?".
 
 4. **Sobre materiais e atributos:** Se o cliente perguntar algo que NÃO está na descrição do produto (ex: "é antialérgico?"), diga honestamente: "Essa informação não tá na descrição do produto, mas posso verificar com a equipe pra você!". NUNCA invente atributos — pode causar problemas reais.
 
-5. **Link de checkout:** Se NÃO existe link no contexto, NUNCA finja que tem. Diga algo natural como "Quer que eu gere o link pra você?" e o sistema gera na próxima interação.
+5. **Você é consultora, não vendedora.** Tire dúvidas sobre produtos, apresente opções e informações. Mas NÃO gere links de carrinho nem processe pagamentos.
 
 ---
 
@@ -333,8 +333,7 @@ Dados do Sistema:
 
 Leia a última mensagem do cliente com atenção. Responda EXATAMENTE ao que ele disse, não ao que você acha que ele deveria ter dito.
 
-Se tem link de checkout → apresente de forma natural e clara, sem template robótico.
-Se NÃO tem link mas o cliente quer comprar → ofereça gerar.
+Se o cliente quer saber mais sobre um produto → apresente informações de forma natural e clara.
 Se o cliente tem um problema → ajude com o problema específico.
 Se o cliente só tá conversando → converse.
 
@@ -415,9 +414,9 @@ def _get_system_data_payload(
 
     # 1. LAST ACTION STATUS (Critical for feedback)
     if state.last_action:
-        status_icon = "✅" if state.last_action_success else "⚠️"
+        status_icon = "⚠️" if state.last_action_success is False else "✅"
         lines.append(f"LAST_ACTION: {state.last_action} ({status_icon} Success: {state.last_action_success})")
-        if not state.last_action_success:
+        if state.last_action_success is False:
             lines.append("   → ERRO: A última ação falhou. Explique o problema e ofereça alternativa.")
             # Add error details
             if state.system_error:
@@ -428,18 +427,6 @@ def _get_system_data_payload(
                     lines.append(f"   → DEBUG INFO: {k}={v}")
 
     # 2. CRITICAL LINKS & IDs
-    if state.checkout_link:
-        # Intent-aware: Don't tell LLM to "send the link" if user is reporting errors
-        if state.intent in ("checkout_error",):
-            lines.append(f"\n🔗 LINK DE CHECKOUT (Já enviado ao cliente): {state.checkout_link}")
-            lines.append("   ⚠️ O cliente JÁ TEM este link e está relatando PROBLEMAS.")
-            lines.append("   → NÃO reenvie o link. Leia a mensagem do cliente e responda ao problema ESPECÍFICO dele.")
-            lines.append("   → Responda com base no que o cliente disse, não repita respostas anteriores.")
-        else:
-            lines.append(f"\n🔗 CHECKOUT_LINK (SAGRADO - Envie exatamente): {state.checkout_link}")
-            # Tip for the model
-            if state.last_action == "action_generate_link" and state.last_action_success:
-                 lines.append("   (O link acabou de ser gerado. Envie-o agora!)")
 
     if state.tracking_url:
         lines.append(f"\n🚚 TRACKING_URL: {state.tracking_url}")
@@ -452,35 +439,11 @@ def _get_system_data_payload(
         # Get focused product ID if set
         focused_product_id = state.soft_context.get("focused_product_id")
         selected_variant_id = state.soft_context.get("selected_variant_id")
+        focused_product = None  # Initialize to avoid UnboundLocalError
         
-        # PRIORITY 1: Checkout link exists - show only the carted product
-        if state.checkout_link and state.selected_products:
-            focused_product = None
-            
-            if selected_variant_id:
-                for p in state.selected_products:
-                    for v in p.get("variants") or []:
-                        if str(v.get("id")) == str(selected_variant_id):
-                            focused_product = p
-                            break
-                    if focused_product:
-                        break
-            
-            if not focused_product and state.selected_products:
-                focused_product = state.selected_products[0]
-            
-            if focused_product:
-                title = focused_product.get("title", "Produto")
-                price = _format_price(focused_product.get("price"))
-                lines.append(f"\n🛒 PRODUTO NO CARRINHO: {title} - {price}")
-                v_title = state.soft_context.get("selected_variant_title")
-                if v_title:
-                    lines.append(f"   → Variante: {v_title}")
-                lines.append("   (Checkout link já gerado. NÃO liste outros produtos.)")
-        
-        # PRIORITY 2: focused_product_id set - User is asking about a SPECIFIC product
+        # PRIORITY 1: focused_product_id set - User is asking about a SPECIFIC product
         # Show ONLY that product with FULL DESCRIPTION for grounding
-        elif focused_product_id and state.selected_products:
+        if focused_product_id and state.selected_products:
             focused_product = None
             for p in state.selected_products:
                 if str(p.get("product_id") or p.get("id")) == str(focused_product_id):
@@ -544,7 +507,7 @@ def _get_system_data_payload(
                 lines.append("   (O cliente pode escolher ou perguntar sobre um deles)")
         
         # Search Results Context
-        if state.last_action == "action_search_products":
+        if state.last_action == "search_products":
              count = state.soft_context.get("search_results_count", 0)
              lines.append(f"\n🔍 BUSCA RECENTE: Encontrei {count} produtos para '{state.search_query or 'busca'}'")
              if count == 0:
@@ -556,11 +519,11 @@ def _get_system_data_payload(
             lines.append(f"📧 EMAIL: {state.customer_email}")
         
         # Ticket/Refund context
-        if state.soft_context.get("ticket_id") or state.metadata.get("ticket_id"):
-            tid = state.soft_context.get("ticket_id") or state.metadata.get("ticket_id")
+        if state.soft_context.get("ticket_id") or state.facts.get("ticket_id"):
+            tid = state.soft_context.get("ticket_id") or state.facts.get("ticket_id")
             lines.append(f"🎫 TICKET CRIADO: #{tid}")
         
-        status = state.soft_context.get("order_status") or state.metadata.get("order_status")
+        status = state.soft_context.get("order_status") or state.facts.get("order_status")
         if status:
             lines.append(f"📊 STATUS PEDIDO: {status}")
             
@@ -595,13 +558,13 @@ def _get_system_data_payload(
                     "Não peça CPF. Não peça número do pedido ainda."
                 )
 
-        if state.metadata.get("wismo_error") == "order_not_found":
+        if state.facts.get("wismo_error") == "order_not_found":
             wismo_context_parts.append(
                 "INSTRUÇÃO: O pedido não foi encontrado com os dados fornecidos. "
                 "Confirme se o e-mail ou número estão corretos, e ofereça abrir um ticket."
             )
 
-        if state.metadata.get("wismo_error") == "shopify_not_configured":
+        if state.facts.get("wismo_error") == "shopify_not_configured":
             wismo_context_parts.append(
                 "INSTRUÇÃO: Sistema de pedidos temporariamente indisponível. "
                 "Peça desculpas e ofereça contato humano."
@@ -612,7 +575,7 @@ def _get_system_data_payload(
             lines.extend(wismo_context_parts)
 
     # FAQ answer if available
-    faq_answer = state.metadata.get("faq_answer")
+    faq_answer = state.facts.get("faq_answer")
     if faq_answer:
         lines.append(f"- faq_answer: {faq_answer}")
 
@@ -719,16 +682,5 @@ def generate_humanized_response(
     # Clean quotes
     if response.startswith('"') and response.endswith('"'):
         response = response[1:-1]
-    
-    # Safety Net: Ensure link is present if we just generated it
-    # But NOT for checkout_error or other non-purchase intents
-    checkout_link = state.checkout_link
-    non_link_intents = {"checkout_error", "greeting", "general", "order_status", "order_complaint"}
-    if (domain == "sales" 
-        and checkout_link 
-        and checkout_link not in response
-        and state.intent not in non_link_intents):
-        if state.last_action == "action_generate_link":
-            response += f"\n\n{checkout_link}"
     
     return response

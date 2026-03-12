@@ -9,12 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.core.constants import (
-    INTENT_CART_RETRY,
-    INTENT_ORDER_COMPLAINT,
-    INTENT_PRODUCT_LINK,
-    INTENT_PROVIDE_ORDER_ID,
-)
 from app.core.router import classify, apply_entities_to_state
 from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
@@ -46,25 +40,6 @@ def _run_script(state, tenant, path: Path):
             continue
         state = _run_message(state, tenant, line)
     return state
-
-
-def test_checkout_retry_dialog():
-    tenant = TenantRegistry().get("demo")
-    state = ConversationState(tenant_id=tenant.tenant_id, session_id="test-session")
-
-    state = _run_message(state, tenant, "oi")
-    state = _run_message(state, tenant, "vi esse produto https://example.com/products/colar")
-    assert state.soft_context.get("selected_variant_id") is not None
-
-    state = _run_message(state, tenant, "quero comprar")
-    assert state.last_strategy == "permalink"
-
-    state = _run_message(state, tenant, "deu erro no link")
-    state.last_action_success = False
-
-    state = _run_message(state, tenant, "gera de novo")
-    assert state.last_strategy == "add_to_cart"
-    assert state.last_bot_message.count("https://") == 1
 
 
 def test_store_qa_payment_dialog():
@@ -166,11 +141,6 @@ def test_order_tracking_stale_dialog(monkeypatch):
         return None
 
     monkeypatch.setattr("app.tools.shopify_orders.ShopifyOrdersClient.get_order_by_number", mock_get_order_by_number)
-    
-    # Mock extract_tracking explicitly if needed, but existing logic in action_get_order uses the real method which calls client logic.
-    # Since we didn't mock extract_tracking, it uses the real method on the helper instance? 
-    # ShopifyOrdersClient in action_get_order is instantiated. Monkeypatch targets the class method, so instances get it.
-    # But extract_tracking is also a method on the class. So it should work fine on the real logic.
 
     # Mock Supabase for ticket creation
     class MockSupabase:
@@ -190,7 +160,6 @@ def test_order_tracking_stale_dialog(monkeypatch):
     script_path = Path("tests/dialogs/order_tracking_stale.txt")
 
     state = _run_script(state, tenant, script_path)
-    # The assert checks for the URL in the mock data
     assert state.tracking_url == "https://track.example.com/ABC"
     assert state.ticket_opened is True
 
@@ -226,32 +195,22 @@ def test_router_llm_cases():
             assert _coerce_entity_value(decision.entities.get(key)) == _coerce_entity_value(value)
 
 
-# Heuristic tests removed as we moved to 100% AI router.
-# The following tests were deleted because classify_intent_heuristic no longer exists/works.
-# - test_router_heuristic_digits_only_order_id
-# - test_router_heuristic_order_complaint_days
-# - test_router_heuristic_product_url
-
 def test_router_ambiguous_llm_fallback(monkeypatch):
     from app.core.router_llm import RouterResult, TopIntent
 
     def _fake_llm(_message, _context, _intents, timeout_s=None):
         return RouterResult(
             domain="sales",
-            intent=INTENT_CART_RETRY,
+            intent="search_product",
             confidence=0.7,
             ambiguous=False,
-            top_intents=[TopIntent(intent=INTENT_CART_RETRY, confidence=0.7)],
+            top_intents=[TopIntent(intent="search_product", confidence=0.7)],
             entities={"order_id": "1001"},
             rationale="test",
         )
 
     monkeypatch.setattr("app.core.router.classify_with_llm", _fake_llm)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    # This should trigger sanity check failure because order_id is present but domain is sales
-    # (actually sales usually doesn't have order_id, sanity_check line 173:
-    # if (entities.get("order_id") or entities.get("email")) and domain == "sales": return False)
-    # So this mimics a bad LLM result that should trigger fallback.
     decision = classify("pedido 1001 parado", context=None, use_llm=True)
     assert decision.used_fallback is True
 
@@ -275,3 +234,35 @@ def test_sentiment_frustration_no_handoff():
 
     state = _run_script(state, tenant, script_path)
     assert state.needs_handoff is False
+
+
+def test_greeting_no_apology():
+    """Regression: a sales greeting with no products must NOT mention a failed action."""
+    from app.core.llm_humanized import _get_system_data_payload
+    from app.core.tenancy import TenantRegistry
+
+    tenant = TenantRegistry().get("demo")
+    state = ConversationState(tenant_id=tenant.tenant_id, session_id="test-greeting")
+    state.intent = "greeting"
+    state.domain = "sales"
+
+    # --- Unit check: payload must not contain failure guidance ---
+    payload = _get_system_data_payload(state, tenant, "sales", "")
+    assert "ERRO" not in payload, (
+        f"Payload should not contain failure guidance for a greeting.\nPayload:\n{payload}"
+    )
+    assert "falhou" not in payload.lower(), (
+        f"Payload should not mention 'falhou' for a greeting.\nPayload:\n{payload}"
+    )
+
+    # --- Integration check: bot reply must not apologise ---
+    if not os.getenv("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY not set; skipping LLM integration part.")
+
+    state = _run_message(state, tenant, "oi")
+    reply = (state.last_bot_message or "").lower()
+    apology_words = ["erro", "falhou", "problema", "desculp"]
+    for word in apology_words:
+        assert word not in reply, (
+            f"Greeting reply should not contain '{word}'.\nReply: {state.last_bot_message}"
+        )

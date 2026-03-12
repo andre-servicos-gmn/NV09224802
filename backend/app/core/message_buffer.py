@@ -29,43 +29,47 @@ class AsyncMessageBuffer:
 
     async def add_message(
         self, 
-        session_id: str, 
+        buffer_id: str, 
         message_text: str, 
         process_callback: Callable[[str, Any], Coroutine], 
         *args,
         **kwargs
     ):
-        """Add a message to the buffer and ensure a watcher task is running."""
+        """Add a message to the buffer and ensure a watcher task is running.
+        
+        Args:
+            buffer_id: Composite key (e.g. 'tenant:channel:session') that
+                       uniquely identifies the conversation buffer.
+        """
         async with self._lock:
-            # Adjustment: Intelligent logic check if message exists during processing handled in watcher
-            if session_id not in self._buffers:
-                self._buffers[session_id] = []
+            if buffer_id not in self._buffers:
+                self._buffers[buffer_id] = []
             
-            self._buffers[session_id].append(message_text)
-            self._last_update[session_id] = time.time()
+            self._buffers[buffer_id].append(message_text)
+            self._last_update[buffer_id] = time.time()
             
-            logger.info(f"[BUFFER] Added msg for {session_id[-4:]}. Size: {len(self._buffers[session_id])}")
+            logger.info(f"[BUFFER] Added msg for {buffer_id}. Size: {len(self._buffers[buffer_id])}")
             
             # Start watcher if not running
-            if session_id not in self._tasks or self._tasks[session_id].done():
-                self._tasks[session_id] = asyncio.create_task(
-                    self._watch_and_process(session_id, process_callback, *args, **kwargs)
+            if buffer_id not in self._tasks or self._tasks[buffer_id].done():
+                self._tasks[buffer_id] = asyncio.create_task(
+                    self._watch_and_process(buffer_id, process_callback, *args, **kwargs)
                 )
-                logger.info(f"[BUFFER] Started watcher task for {session_id[-4:]}")
+                logger.info(f"[BUFFER] Started watcher task for {buffer_id}")
 
-    async def _get_processing_lock(self, session_id: str) -> asyncio.Lock:
-        """Get or create a lock for the session."""
+    async def _get_processing_lock(self, buffer_id: str) -> asyncio.Lock:
+        """Get or create a lock for the buffer."""
         async with self._lock:
-            if session_id not in self._processing_locks:
-                self._processing_locks[session_id] = asyncio.Lock()
-            return self._processing_locks[session_id]
+            if buffer_id not in self._processing_locks:
+                self._processing_locks[buffer_id] = asyncio.Lock()
+            return self._processing_locks[buffer_id]
 
-    async def _watch_and_process(self, session_id: str, callback: Callable, *args, **kwargs):
+    async def _watch_and_process(self, buffer_id: str, callback: Callable, *args, **kwargs):
         """Loop that sleeps until the silence duration is met, then executes securely."""
         try:
             while True:
                 # Check silence duration
-                last_ts = self._last_update.get(session_id, 0)
+                last_ts = self._last_update.get(buffer_id, 0)
                 now = time.time()
                 elapsed = now - last_ts
                 remaining = self.debounce_seconds - elapsed
@@ -77,22 +81,21 @@ class AsyncMessageBuffer:
                 await asyncio.sleep(remaining)
             
             # Processing Phase
-            session_lock = await self._get_processing_lock(session_id)
+            session_lock = await self._get_processing_lock(buffer_id)
             
             try:
                 # Adjustment 4: Add timeout
                 async with asyncio.timeout(60.0):  # 60s timeout
                     async with session_lock:
                         async with self._lock:
-                            # Re-check if new messages arrived while we were waiting for lock
-                            # Note: In this simple design, we just process what we have. 
-                            # The strict serialization means next watcher will pick up new stuffs if any added.
-                            messages = self._buffers.pop(session_id, [])
-                            self._tasks.pop(session_id, None)
-                            self._last_update.pop(session_id, None)
+                            messages = self._buffers.pop(buffer_id, [])
+                            # Clear task gate BEFORE callback so new messages
+                            # arriving during processing can start a fresh watcher.
+                            self._tasks.pop(buffer_id, None)
+                            self._last_update.pop(buffer_id, None)
                         
                         if messages:
-                            logger.info(f"[BUFFER] FIRING {session_id[-4:]} with {len(messages)} messages")
+                            logger.info(f"[BUFFER] FIRING {buffer_id} with {len(messages)} messages")
                             
                             full_text = ". ".join(msg.strip() for msg in messages)
                             
@@ -100,23 +103,23 @@ class AsyncMessageBuffer:
                             try:
                                 await callback(full_text, *args, **kwargs)
                             except Exception as e:
-                                logger.error(f"Callback error for {session_id}: {e}")
+                                logger.error(f"Callback error for {buffer_id}: {e}")
             
             except asyncio.TimeoutError:
-                logger.error(f"⚠️ Processing timeout (60s) for {session_id[-4:]}")
+                logger.error(f"⚠️ Processing timeout (60s) for {buffer_id}")
                 # Clean resources
                 async with self._lock:
-                    self._buffers.pop(session_id, None)
-                    self._tasks.pop(session_id, None)
-                    self._last_update.pop(session_id, None)
-                    self._processing_locks.pop(session_id, None)
+                    self._buffers.pop(buffer_id, None)
+                    self._tasks.pop(buffer_id, None)
+                    self._last_update.pop(buffer_id, None)
+                    self._processing_locks.pop(buffer_id, None)
                 
         except Exception as e:
-            logger.error(f"Error in buffer watcher for {session_id}: {e}")
+            logger.error(f"Error in buffer watcher for {buffer_id}: {e}")
             async with self._lock:
-                self._buffers.pop(session_id, None)
-                self._tasks.pop(session_id, None)
-                self._last_update.pop(session_id, None)
+                self._buffers.pop(buffer_id, None)
+                self._tasks.pop(buffer_id, None)
+                self._last_update.pop(buffer_id, None)
 
 # Global singleton
 message_buffer = AsyncMessageBuffer(debounce_seconds=2.5)

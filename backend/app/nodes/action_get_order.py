@@ -260,6 +260,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
     # Guardar status raw no soft_context para o LLM ter contexto completo
     state.soft_context["order_raw"] = {
+
         "financial_status": order.get("financial_status"),
         "fulfillment_status": order.get("fulfillment_status"),
         "tracking_company": order.get("tracking_company"),

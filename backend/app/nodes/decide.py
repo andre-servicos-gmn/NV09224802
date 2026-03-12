@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 SALES_DECIDE_PROMPT = """Você é o Consultor de Produtos do Nouvaris AI.
 Sua missão é tirar todas as dúvidas do cliente sobre produtos da loja.
+Você NÃO realiza vendas, NÃO gera links de carrinho e NÃO processa pagamentos.
 
 ## ESTADO ATUAL
 Ferramentas disponíveis: [search_products, human_handoff]
@@ -52,7 +53,7 @@ def _build_product_context(state: ConversationState) -> str:
         lines.append("📦 Produtos em contexto: Nenhum")
 
     if state.search_query:
-        lines.append(f"🔍 Última busca: \"{state.search_query}\"")
+        lines.append(f'🔍 Última busca: "{state.search_query}"')
 
     return "\n".join(lines)
 
@@ -146,7 +147,6 @@ def decide(state: ConversationState, tenant: TenantConfig) -> ConversationState:
     next_step = _decide_with_heuristics(state)
 
     state.next_step = next_step
-    state.last_action = f"decide_{next_step}"
 
     logger.info(
         f"[DECIDE] intent={state.intent} → next_step={next_step} "
@@ -187,8 +187,6 @@ def decide_with_llm(state: ConversationState, tenant: TenantConfig) -> Conversat
 
         tool_map = {
             "search_products": "action_search_products",
-            "select_variant": "action_select_variant",
-            "generate_checkout_link": "action_generate_link",
             "human_handoff": "handoff",
             "response": "respond",
         }
@@ -196,7 +194,6 @@ def decide_with_llm(state: ConversationState, tenant: TenantConfig) -> Conversat
         next_step = tool_map.get(raw_response, "respond")
 
         state.next_step = next_step
-        state.last_action = f"decide_llm_{next_step}"
 
         logger.info(f"[DECIDE LLM] Response: {raw_response} → Node: {next_step}")
 

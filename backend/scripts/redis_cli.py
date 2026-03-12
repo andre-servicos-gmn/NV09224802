@@ -1,24 +1,30 @@
+"""
+redis_cli.py — Ferramenta interativa de diagnóstico Redis
+
+Usa o módulo centralizado redis_client para conexão.
+"""
 import os
 import sys
 import json
 import asyncio
 from dotenv import load_dotenv
-import redis.asyncio as aioredis
 
 # Load environment variables
 dotenv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
 load_dotenv(dotenv_path)
 
-REDIS_URL = os.getenv('REDIS_URL')
+# Add backend to path so we can import app modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-if not REDIS_URL:
-    print("❌ REDIS_URL não encontrado no .env")
-    sys.exit(1)
+from app.core.redis_client import get_redis_async
 
 async def main():
-    print(f"Conectando ao Redis: {REDIS_URL.split('@')[-1] if '@' in REDIS_URL else 'localhost'}...")
+    r = get_redis_async()
+    if not r:
+        print("❌ REDIS_URL não encontrado no .env ou conexão falhou")
+        return
+
     try:
-        r = await aioredis.from_url(REDIS_URL, decode_responses=True)
         await r.ping()
         print("✅ Conectado com sucesso!\n")
     except Exception as e:

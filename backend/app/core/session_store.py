@@ -1,6 +1,9 @@
-"""Session store for maintaining conversation state across webhook calls.
-This module provides in-memory session storage for WhatsApp conversations.
-In production, this should be replaced with Redis or database-backed storage.
+"""
+DEPRECATED — Use app.core.session_store_v2 instead.
+
+This module provides in-memory session storage only.
+session_store_v2 provides Redis L1 + Supabase L2 with write-through.
+All production code should import from session_store_v2.
 """
 import time
 import logging

@@ -10,18 +10,13 @@ class ConversationState(BaseModel):
     
     # --- CÉREBRO E INTENÇÃO ---
     domain: Optional[str] = None          # sales | support | store_qa
-    intent: str = "general"               # checkout_error, search_product, etc.
+    intent: str = "general"               # search_product, greeting, etc.
     confidence_score: float = 0.0         # 0.0 a 1.0 (Para decidir Handoff)
     
-    # --- MEMÓRIA DE VENDAS (SALES CONTEXT) ---
+    # --- MEMÓRIA DE CONSULTA (PRODUCT CONTEXT) ---
     search_query: Optional[str] = None
     selected_products: List[dict] = Field(default_factory=list)
     available_variants: List[dict] = Field(default_factory=list)
-    selected_variant_id: Optional[str] = None
-    cart_items: List[dict] = Field(default_factory=list)
-    
-    # [NOVO] O Link Sagrado - Diferente de tracking_url!
-    checkout_link: Optional[str] = None   
     
     # --- MEMÓRIA DE SUPORTE (SUPPORT CONTEXT) ---
     order_id: Optional[str] = None
@@ -65,7 +60,7 @@ class ConversationState(BaseModel):
     # --- FLUXO DO GRAFO (Graph Flow) ---
     next_step: Optional[str] = None         # Para decidir qual nó executar
     last_action: Optional[str] = None       # Último nó/ação executada
-    last_strategy: Optional[str] = None     # Estratégia atual (ex: "permalink", "add_to_cart")
+    last_strategy: Optional[str] = None     # Estratégia atual (ex: "rag_answer")
     
     last_action_success: Optional[bool] = None
     

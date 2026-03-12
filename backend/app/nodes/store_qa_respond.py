@@ -29,7 +29,7 @@ def store_qa_respond(state: ConversationState, tenant: TenantConfig) -> Conversa
     # if the user is saying goodbye or thank you.
     # For now, we trust the LLM's natural closing.
     
-    # If explicit strategies are needed, we can set them in state.metadata before calling generate.
+    # If explicit strategies are needed, we can set them in state.facts before calling generate.
     
     state.last_bot_message = response
     state.last_action = "generate_response"

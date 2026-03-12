@@ -1,12 +1,8 @@
-# Modified: register search/select action nodes for sales flow.
+# Sales graph — Consultant mode (search + respond only).
 from langgraph.graph import END, StateGraph
 
 from app.core.state import ConversationState
-from app.nodes.action_generate_link import action_generate_link
-from app.nodes.action_resolve_product import action_resolve_product
 from app.nodes.action_search_products import action_search_products
-from app.nodes.action_select_product import action_select_product
-from app.nodes.action_select_variant import action_select_variant
 from app.nodes.decide import decide
 from app.nodes.handoff import handoff
 from app.nodes.respond import respond
@@ -15,11 +11,7 @@ from app.nodes.respond import respond
 def _build_graph(tenant):
     graph = StateGraph(ConversationState)
     graph.add_node("decide", lambda state: decide(state, tenant))
-    graph.add_node("action_resolve_product", lambda state: action_resolve_product(state, tenant))
     graph.add_node("action_search_products", lambda state: action_search_products(state, tenant))
-    graph.add_node("action_select_product", lambda state: action_select_product(state, tenant))
-    graph.add_node("action_select_variant", lambda state: action_select_variant(state, tenant))
-    graph.add_node("action_generate_link", lambda state: action_generate_link(state, tenant))
     graph.add_node("respond", lambda state: respond(state, tenant))
     graph.add_node("handoff", lambda state: handoff(state, tenant))
 
@@ -29,41 +21,13 @@ def _build_graph(tenant):
         "decide",
         lambda state: state.next_step,
         {
-            "action_resolve_product": "action_resolve_product",
             "action_search_products": "action_search_products",
-            "action_select_product": "action_select_product",
-            "action_select_variant": "action_select_variant",
-            "action_generate_link": "action_generate_link",
             "respond": "respond",
             "handoff": "handoff",
         },
     )
 
-    graph.add_edge("action_resolve_product", "respond")
-    
-    # ACTION CHAINING: action_search_products pode ir para generate_link ou respond
-    graph.add_conditional_edges(
-        "action_search_products",
-        lambda state: state.next_step if state.next_step in ["action_generate_link", "respond"] else "respond",
-        {
-            "action_generate_link": "action_generate_link",
-            "respond": "respond",
-        },
-    )
-    
-    graph.add_edge("action_select_product", "respond")
-    
-    # ACTION CHAINING: action_select_variant deve ir para generate_link quando variante selecionada
-    graph.add_conditional_edges(
-        "action_select_variant",
-        lambda state: "action_generate_link" if state.soft_context.get("selected_variant_id") else "respond",
-        {
-            "action_generate_link": "action_generate_link",
-            "respond": "respond",
-        },
-    )
-    
-    graph.add_edge("action_generate_link", "respond")
+    graph.add_edge("action_search_products", "respond")
     graph.add_edge("respond", END)
     graph.add_edge("handoff", END)
 

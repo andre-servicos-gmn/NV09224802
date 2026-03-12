@@ -30,18 +30,21 @@ from app.core.tenancy import TenantRegistry
 from app.sync.sync_service import SyncService
 import os
 from app.core.message_buffer import AsyncMessageBuffer
-from app.core.message_buffer_redis import RedisMessageBuffer
+from app.core.message_buffer_redis import RedisMessageBuffer, EnqueueOutcome
 
 # Seleção automática baseada na disponibilidade do Redis
-_redis_url = os.getenv('REDIS_URL')
-if _redis_url:
-    message_buffer = RedisMessageBuffer(
-        redis_url=_redis_url,
-        debounce_seconds=2.5
-    )
+if os.getenv('REDIS_URL'):
+    message_buffer = RedisMessageBuffer(debounce_seconds=2.5)
 else:
     # Fallback para o buffer em memória (desenvolvimento local)
     message_buffer = AsyncMessageBuffer(debounce_seconds=2.5)
+
+def _register_buffer_callback():
+    """Registra o callback no buffer Redis para o sweeper (lazy, chamado após módulo carregar)."""
+    if isinstance(message_buffer, RedisMessageBuffer):
+        message_buffer.register_callback(process_consolidated_message)
+
+# Será chamado após process_consolidated_message ser definida (ver final do módulo)
     
 from app.core.session_store_v2 import get_session, save_session
 from app.core.state import ConversationState
@@ -316,8 +319,8 @@ async def process_consolidated_message(
 
         # Handle Reset Command
         if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
-            from app.core.session_store import clear_session
-            clear_session(tenant.tenant_id, session_id)
+            from app.core.session_store_v2 import clear_session
+            clear_session(tenant_uuid, session_id)
             logger.info(f"🔄 Session reset requested for {session_id}")
             await adapter.send_text_message(
                 to=session_id,  # session_id is the phone number
@@ -326,7 +329,7 @@ async def process_consolidated_message(
             return
 
         # Session management
-        state = get_session(tenant.tenant_id, session_id)
+        state = get_session(tenant_uuid, session_id)
         
         if state:
             state.last_user_message = text
@@ -464,7 +467,7 @@ async def process_consolidated_message(
             clean_phone = "".join(c for c in raw_phone if c.isdigit())
             if clean_phone:
                 state.customer_phone = clean_phone
-                state.metadata["customer_phone_raw"] = clean_phone
+                state.facts["customer_phone_raw"] = clean_phone
 
         # Process with AI agent/graph
         result_state = await asyncio.to_thread(run_main_graph, state, tenant)
@@ -475,7 +478,7 @@ async def process_consolidated_message(
             # Record sent message for anti-loop
             _record_sent_message(response_text)
             
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
             await adapter.mark_as_read(message_id)
             
@@ -522,7 +525,7 @@ async def process_consolidated_message(
             if 'send_result' in locals() and not send_result.success:
                 logger.error(f"Failed to send WhatsApp response: {send_result.error}")
         else:
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
     except Exception as e:
         logger.error(f"Error processing WhatsApp message: {e}", exc_info=True)
@@ -677,11 +680,12 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
             from app.core.tenancy import TenantConfig
             tenant = TenantConfig(
                 tenant_id="demo",
+                uuid="c35fe360-dc69-4997-9d1f-ae57f4d8a135",
                 name="Demo Store",
-                whatsapp_provider="twilio",
-                whatsapp_instance_url=os.getenv("TWILIO_PHONE_NUMBER", "+14155238886"), # Twilio Phone Number
-                whatsapp_api_key=os.getenv("TWILIO_AUTH_TOKEN", "REPLACE_ME"), # Auth Token
-                whatsapp_instance_name=os.getenv("TWILIO_ACCOUNT_SID", "AC00000000000000000000000000000000"), # Account SID
+                whatsapp_provider="evolution",
+                whatsapp_instance_url=os.getenv("EVOLUTION_API_URL", "http://localhost:8080"),
+                whatsapp_api_key=os.getenv("EVOLUTION_API_KEY", "mock_key"),
+                whatsapp_instance_name=os.getenv("EVOLUTION_INSTANCE_NAME", "test_instance"),
                 active=True
             )
         else:
@@ -733,8 +737,10 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
         raise HTTPException(status_code=400, detail="Invalid payload formatting")
     
     # Parse incoming message
+    logger.info(f"Incoming WhatsApp webhook payload: {payload}")
     message = adapter.parse_incoming_message(payload)
     if not message:
+        logger.warning(f"Payload could not be parsed as a message: {payload}")
         return {"success": True, "event": "non_message_event"}
     
     # Anti-loop & Deduplication checks
@@ -773,21 +779,33 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     )
     
     # Buffer message for AI processing
-    await message_buffer.add_message(
-        session_id,
+    # Composite buffer_id prevents cross-tenant collisions
+    tenant_uuid_val = tenant.uuid or tenant.tenant_id
+    buffer_id = f"{tenant_uuid_val}:whatsapp:{session_id}"
+    outcome = await message_buffer.add_message(
+        buffer_id,
         message.text,
         process_consolidated_message,
-        tenant.uuid or tenant.tenant_id,
+        tenant_uuid_val,
         message.from_number,
         message.message_id,
-        session_id
+        session_id,
+        message_id=message.message_id,
     )
     
-    return {
-        "success": True, 
-        "event": "message_buffered", 
-        "status": "processing_async"
-    }
+    # Return outcome-aware response
+    if isinstance(message_buffer, RedisMessageBuffer):
+        if outcome == EnqueueOutcome.CONFIRMED:
+            return {"success": True, "event": "message_buffered", "status": "processing_async"}
+        elif outcome == EnqueueOutcome.DUPLICATE:
+            return {"success": True, "event": "duplicate_dropped", "status": "already_enqueued"}
+        elif outcome == EnqueueOutcome.UNKNOWN:
+            return {"success": False, "event": "enqueue_uncertain", "status": "retry_safe"}
+        else:  # FAILED
+            return {"success": False, "event": "enqueue_failed", "status": "message_lost"}
+    else:
+        # In-memory buffer — always succeeds synchronously
+        return {"success": True, "event": "message_buffered", "status": "processing_async"}
 
 
 # --- Catch-All: Silently ignore all other Evolution API event sub-routes ---
@@ -801,3 +819,6 @@ async def whatsapp_ignore_event(tenant_id: str, event_type: str):
 async def health_check():
     """Simple health check endpoint."""
     return {"status": "healthy", "service": "webhooks"}
+
+# Register callback for the background sweeper (must be after process_consolidated_message is defined)
+_register_buffer_callback()

@@ -9,56 +9,43 @@ import json
 import logging
 import os
 from typing import Optional
-import redis
 
 from app.core.state import ConversationState
 from app.core.supabase_client import get_supabase
+from app.core.redis_client import get_redis_sync
 
 logger = logging.getLogger(__name__)
 
 SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '1800'))
-
-_redis_client: Optional[redis.Redis] = None
-
-def _get_redis() -> Optional[redis.Redis]:
-    """Retorna cliente Redis (singleton). Retorna None se indisponível."""
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-    
-    url = os.getenv('REDIS_URL')
-    if not url:
-        return None
-        
-    try:
-        client = redis.from_url(url, decode_responses=True, socket_timeout=2.0)
-        client.ping()  # Valida conexão
-        _redis_client = client
-        logger.info('Redis conectado com sucesso')
-        return _redis_client
-    except Exception as e:
-        logger.warning(f'Redis indisponível, usando apenas Supabase: {e}')
-        return None
 
 def _redis_key(tenant_id: str, session_id: str) -> str:
     return f"session:{tenant_id}:{session_id}"
 
 # ── REDIS LAYER ─────────────────────────────────────────────────────
 def _redis_get(tenant_id: str, session_id: str) -> Optional[ConversationState]:
-    r = _get_redis()
+    r = get_redis_sync()
     if not r:
         return None
     try:
         data = r.get(_redis_key(tenant_id, session_id))
         if data:
-            return ConversationState(**json.loads(data))
+            try:
+                return ConversationState(**json.loads(data))
+            except Exception as e:
+                # Dados corrompidos ou schema mudou — invalidar cache
+                logger.warning(f'Redis deserialize error (invalidating key): {e}')
+                try:
+                    r.delete(_redis_key(tenant_id, session_id))
+                except Exception:
+                    pass
+                return None
         return None
     except Exception as e:
         logger.warning(f'Redis get error: {e}')
         return None
 
 def _redis_set(tenant_id: str, session_id: str, state: ConversationState) -> None:
-    r = _get_redis()
+    r = get_redis_sync()
     if not r:
         return
     try:
@@ -69,7 +56,7 @@ def _redis_set(tenant_id: str, session_id: str, state: ConversationState) -> Non
         logger.warning(f'Redis set error: {e}')
 
 def _redis_delete(tenant_id: str, session_id: str) -> None:
-    r = _get_redis()
+    r = get_redis_sync()
     if not r:
         return
     try:
@@ -101,18 +88,32 @@ def _supabase_get(tenant_id: str, session_id: str) -> Optional[ConversationState
         logger.warning(f'Supabase get error: {e}')
         return None
 
-def _supabase_set(tenant_id: str, session_id: str, state: ConversationState) -> None:
+def _supabase_set(tenant_id: str, session_id: str, state: ConversationState) -> bool:
+    """Persiste estado no Supabase. Retorna True se exatamente 1 row foi atualizada."""
     try:
         supabase = get_supabase()
         from datetime import datetime, timezone
-        supabase.table('conversations').update({
+        result = supabase.table('conversations').update({
             'state': state.model_dump(mode='json'),
             'domain': state.domain,
             'frustration_level': state.frustration_level,
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }).eq('tenant_id', tenant_id).eq('session_id', session_id).execute()
+        
+        # Verificar que exatamente 1 row foi atualizada
+        rows = result.data if result.data else []
+        if isinstance(rows, dict):
+            rows = [rows]
+        if len(rows) != 1:
+            logger.error(
+                f'Supabase set: expected 1 row updated, got {len(rows)} '
+                f'for tenant={tenant_id} session={session_id}'
+            )
+            return False
+        return True
     except Exception as e:
         logger.error(f'Supabase set error: {e}')
+        return False
 
 # ── INTERFACE PÚBLICA ───────────────────────────────────────────────
 def get_session(tenant_id: str, session_id: str) -> Optional[ConversationState]:
@@ -136,11 +137,16 @@ def get_session(tenant_id: str, session_id: str) -> Optional[ConversationState]:
 
 def save_session(tenant_id: str, session_id: str, state: ConversationState) -> None:
     """
-    Persiste sessão nos dois layers (write-through).
-    Redis falha silenciosamente; Supabase é obrigatório.
+    Persiste sessão — Supabase primeiro (authoritative), Redis depois (cache).
+    Se Supabase falhar, o cache Redis é invalidado para evitar state fantasma.
     """
-    _redis_set(tenant_id, session_id, state)   # Layer 1 (best-effort)
-    _supabase_set(tenant_id, session_id, state) # Layer 2 (authoritative)
+    supabase_ok = _supabase_set(tenant_id, session_id, state)  # Layer 2 (authoritative)
+    if supabase_ok:
+        _redis_set(tenant_id, session_id, state)  # Layer 1 (cache, only on success)
+    else:
+        # Supabase falhou — não deixar estado órfão no Redis
+        _redis_delete(tenant_id, session_id)
+        logger.warning(f'Redis cache invalidated for {session_id} due to Supabase write failure')
 
 def clear_session(tenant_id: str, session_id: str) -> None:
     """Remove sessão de ambos os layers."""
@@ -154,18 +160,3 @@ def clear_session(tenant_id: str, session_id: str) -> None:
 def cleanup_expired_sessions() -> int:
     """Redis faz TTL automático. Supabase é gerenciado via updated_at."""
     return 0
-
-def get_redis_health() -> dict:
-    """Retorna status de saúde do Redis para monitoramento."""
-    r = _get_redis()
-    if not r:
-        return {'connected': False, 'reason': 'REDIS_URL not set or connection failed'}
-    try:
-        info = r.info('server')
-        return {
-            'connected': True,
-            'version': info.get('redis_version'),
-            'uptime_days': info.get('uptime_in_days'),
-        }
-    except Exception as e:
-        return {'connected': False, 'reason': str(e)}

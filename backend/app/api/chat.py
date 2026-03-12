@@ -19,6 +19,7 @@ from app.core.state import ConversationState
 from app.core.tenancy import TenantRegistry
 from app.core.supabase_client import get_supabase
 from app.core.database import get_or_create_conversation, save_message
+from app.core.session_store_v2 import get_session, save_session
 from app.core.constants import INTENT_RETURN_EXCHANGE
 from app.graphs.main_graph import run_main_graph
 
@@ -129,21 +130,15 @@ async def chat_endpoint(request: ChatRequest):
             status=conv_status
         )
 
-    # 5. Load or Initialize State from conversations.state
-    state = None
-    existing_state = conversation.get("state", {})
+    # 5. Load or Initialize State via session_store_v2 (Redis L1 + Supabase L2)
+    state = get_session(tenant_uuid, session_id)
     
-    if existing_state and isinstance(existing_state, dict) and existing_state:
-        try:
-            state = ConversationState(**existing_state)
-            state.tenant_id = tenant.tenant_id
-            state.session_id = session_id
-            if request.personality_id:
-                state.personality_id = request.personality_id
-        except Exception as e:
-            logger.warning(f"Failed to reconstruct state from DB: {e}. Starting fresh.")
-
-    if not state:
+    if state:
+        state.tenant_id = tenant.tenant_id
+        state.session_id = session_id
+        if request.personality_id:
+            state.personality_id = request.personality_id
+    else:
         state = ConversationState(
             tenant_id=tenant.tenant_id,
             session_id=session_id,
@@ -186,12 +181,10 @@ async def chat_endpoint(request: ChatRequest):
     # 8. If handoff triggered, skip graph and return handoff response
     if state.needs_handoff:
         try:
-            # Update conversation status
+            # Update conversation status via unified store
+            save_session(tenant_uuid, session_id, state)
             supabase.table("conversations").update({
                 "status": "handoff",
-                "state": state.model_dump(mode='json'),
-                "domain": state.domain,
-                "frustration_level": state.frustration_level,
             }).eq("id", conversation_id).execute()
             
             # Save system event
@@ -246,12 +239,10 @@ async def chat_endpoint(request: ChatRequest):
     except Exception as e:
         logger.warning(f"Failed to save agent message: {e}")
 
-    # 10. Persist State
+    # 10. Persist State via unified session store (Redis L1 + Supabase L2)
     try:
+        save_session(tenant_uuid, session_id, state)
         supabase.table("conversations").update({
-            "state": state.model_dump(mode='json'),
-            "domain": state.domain,
-            "frustration_level": state.frustration_level,
             "status": "active"
         }).eq("id", conversation_id).execute()
     except Exception as e:

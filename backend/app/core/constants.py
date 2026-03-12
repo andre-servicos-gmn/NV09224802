@@ -1,13 +1,6 @@
-# Modified: add sales search/select/cart intents and descriptions.
-INTENT_CHECKOUT_ERROR = "checkout_error"
-INTENT_CART_RETRY = "cart_retry"
+# Constants for consultant mode — no cart/purchase intents.
 INTENT_PRODUCT_LINK = "product_link"
-INTENT_PURCHASE_INTENT = "purchase_intent"
 INTENT_SEARCH_PRODUCT = "search_product"
-INTENT_SELECT_PRODUCT = "select_product"
-INTENT_SELECT_VARIANT = "select_variant"
-INTENT_ADD_TO_CART = "add_to_cart"
-INTENT_VIEW_CART = "view_cart"
 INTENT_GREETING = "greeting"
 INTENT_STORE_QUESTION = "store_question"
 INTENT_SHIPPING_QUESTION = "shipping_question"
@@ -23,15 +16,8 @@ INTENT_GENERAL = "general"
 DEFAULT_INTENT = INTENT_GENERAL
 
 INTENT_DESCRIPTIONS: dict[str, str] = {
-    INTENT_CHECKOUT_ERROR: "User reports checkout link error or failure.",
-    INTENT_CART_RETRY: "User asks to retry or regenerate checkout/cart link.",
-    INTENT_PRODUCT_LINK: "User shares a product URL.",
-    INTENT_PURCHASE_INTENT: "User wants to buy, pay, or checkout.",
+    INTENT_PRODUCT_LINK: "User shares a product URL to ask about it.",
     INTENT_SEARCH_PRODUCT: "User asks to search products by text.",
-    INTENT_SELECT_PRODUCT: "User selects a product from a list by number.",
-    INTENT_SELECT_VARIANT: "User selects a variant (size/color) by number.",
-    INTENT_ADD_TO_CART: "User asks to add item to cart without checkout.",
-    INTENT_VIEW_CART: "User asks what is in the cart.",
     INTENT_GREETING: "Greeting or hello.",
     INTENT_STORE_QUESTION: "General store policy or contact question.",
     INTENT_SHIPPING_QUESTION: "Shipping, delivery time, or freight question.",

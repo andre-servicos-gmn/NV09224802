@@ -5,8 +5,6 @@ import unicodedata
 from dataclasses import dataclass
 
 from .constants import (
-    INTENT_CART_RETRY,
-    INTENT_CHECKOUT_ERROR,
     INTENT_GENERAL,
     INTENT_GREETING,
     INTENT_ORDER_COMPLAINT,
@@ -17,13 +15,8 @@ from .constants import (
     INTENT_PRODUCT_LINK,
     INTENT_PROVIDE_EMAIL,
     INTENT_PROVIDE_ORDER_ID,
-    INTENT_PURCHASE_INTENT,
     INTENT_RETURN_EXCHANGE,
     INTENT_SEARCH_PRODUCT,
-    INTENT_SELECT_PRODUCT,
-    INTENT_SELECT_VARIANT,
-    INTENT_ADD_TO_CART,
-    INTENT_VIEW_CART,
     INTENT_SHIPPING_QUESTION,
     INTENT_STORE_QUESTION,
     DEFAULT_INTENT,
@@ -74,15 +67,8 @@ def classify_intent_heuristic(message: str) -> str:
 
 def classify_domain_heuristic(intent: str) -> str:
     sales = {
-        INTENT_PURCHASE_INTENT,
         INTENT_PRODUCT_LINK,
-        INTENT_CART_RETRY,
-        INTENT_CHECKOUT_ERROR,
         INTENT_SEARCH_PRODUCT,
-        INTENT_SELECT_PRODUCT,
-        INTENT_SELECT_VARIANT,
-        INTENT_ADD_TO_CART,
-        INTENT_VIEW_CART,
         INTENT_GREETING,
         INTENT_GENERAL,
     }
@@ -185,8 +171,6 @@ def sanity_check(domain: str, intent: str, entities: dict, message: str) -> bool
         return False
     if _message_digits_only(message) and intent != INTENT_PROVIDE_ORDER_ID:
         return False
-    if intent in {INTENT_CHECKOUT_ERROR, INTENT_CART_RETRY} and _has_order_terms(message):
-        return False
     return True
 
 
@@ -205,7 +189,6 @@ def apply_entities_to_state(state, entities: dict) -> None:
     new_order_id = entities.get("order_id")
     if new_order_id:
         # ALWAYS overwrite order_id when user provides a new one
-        # This respects user corrections per AGENT.md canonical state contract
         if state.order_id != new_order_id:
             # Clear stale tracking data from previous order
             state.tracking_url = None
@@ -217,13 +200,12 @@ def apply_entities_to_state(state, entities: dict) -> None:
     
     new_email = entities.get("email")
     if new_email:
-        # ALWAYS overwrite email when user provides a new one
         state.customer_email = new_email
     
     if entities.get("product_url") and not state.soft_context.get("product_url"):
         state.soft_context["product_url"] = entities.get("product_url")
 
-    # [NEW] Map extracted search query to state
+    # Map extracted search query to state
     if entities.get("search_query"):
         state.search_query = entities["search_query"]
     
@@ -264,7 +246,6 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
                 raise ValueError("Unsupported intent from LLM.")
             if result.ambiguous:
                 raise ValueError("LLM ambiguous.")
-            # Use new thresholds from router_llm
             if result.confidence < MIN_CONFIDENCE:
                 raise ValueError(f"LLM confidence {result.confidence} < {MIN_CONFIDENCE}")
             if result.confidence < HIGH_CONFIDENCE and not sanity_check(
@@ -274,7 +255,6 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
             entities = _merge_entities(result.entities, extract_entities_heuristic(message))
             
             # Safety net: ensure domain matches intent
-            # The LLM might classify intent as "order_status" but domain as "store_qa"
             expected_domain = classify_domain_heuristic(result.intent)
             if expected_domain != result.domain and result.intent != INTENT_GENERAL and result.intent != INTENT_GREETING:
                 import logging
@@ -305,7 +285,6 @@ def classify(message: str, context: dict | None = None, use_llm: bool = True) ->
         fallback_reason = "llm_disabled_or_missing_key"
 
     # Fallback when LLM fails:
-    # We removed keyword heuristics, so we default to a safe state.
     intent = DEFAULT_INTENT
     domain = "store_qa"
     decision = RouterDecision(
