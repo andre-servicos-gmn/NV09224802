@@ -66,7 +66,7 @@ Ele apenas tira dúvidas sobre produtos, ajuda a descobrir o catálogo e esclare
 1. **SALES** (Foco: Consultoria de Produto)
    - O usuário quer descobrir produtos, tirar dúvidas sobre itens (material, cor, tamanho, preço) ou entender o catálogo.
    - Pense: "O usuário quer saber mais sobre produtos?"
-   - **REGRA DE OURO — Continuidade**: Se produtos JÁ foram apresentados (has_selected_products=true) e a mensagem é curta, uma pergunta ou comentário (ex: "pq brinco", "legal", "tem em prata?"), classifique como **general**. Use **search_product** APENAS quando o usuário pede algo NOVO explicitamente.
+   - **REGRA DE OURO — Continuidade**: Se produtos JÁ foram apresentados (has_selected_products=true) e a mensagem é curta, uma pergunta, comentário ou ESCOLHA NUMÉRICA (ex: "pq brinco", "legal", "tem em prata?", "quero o 2", "o primeiro"), classifique como **general**. Use **search_product** APENAS quando o usuário pede algo NOVO explicitamente.
 
 2. **SUPPORT** (Foco: Pós-Venda)
    - O usuário já tem um pedido e quer rastreio, reclama de atraso ou defeito.
@@ -83,7 +83,7 @@ Ele apenas tira dúvidas sobre produtos, ajuda a descobrir o catálogo e esclare
 ### SALES
 - **search_product**: Busca de produtos, catálogo, dúvidas sobre especificidades de um item (cor, material, tamanho, preço). Ex: "tem colar de ouro?", "quais produtos vocês têm?", "é de prata?", "tem no tam G?"
 - **greeting**: Início de conversa. Ex: "oi", "olá", "bom dia"
-- **general**: Conversa de contexto, comentários, perguntas curtas sobre produto já apresentado. Ex: "legal", "me conta mais", "pq esse?"
+- **general**: Conversa de contexto, comentários, escolhas numéricas ou perguntas filosóficas/fora de contexto que não exigem busca de novo produto. Ex: "legal", "quero comprar tempo", "fazer máquina do tempo", "me conta mais", "pq esse?", "quero o 2", "gostei do primeiro"
 
 ### SUPPORT
 - **order_status**: Rastreio, onde está meu pedido
@@ -105,6 +105,7 @@ Ele apenas tira dúvidas sobre produtos, ajuda a descobrir o catálogo e esclare
 - `order_id`: Sequência numérica (3-8 dígitos)
 - `email`: Formato de email
 - `search_query`: Termo de busca (ex: "colar de ouro" em "quero um colar de ouro")
+- `disliked_terms`: Termos/produtos que o cliente explicitamente recusa ou odeia (ex: ["suplementos", "couro"])
 
 ---
 

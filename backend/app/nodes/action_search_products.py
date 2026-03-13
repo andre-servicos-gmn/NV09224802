@@ -17,14 +17,16 @@ from app.tools.shopify_client import ShopifyClient
 def _search_with_rag(
     tenant: TenantConfig,
     query: str,
-    limit: int = 5,
+    limit: int = 10,
+    disliked_terms: list[str] = None,
 ) -> Optional[list[dict]]:
     """Search products using RAG semantic search.
     
     Args:
         tenant: Tenant configuration with UUID.
         query: Search query.
-        limit: Maximum results.
+        limit: Maximum results (increased to 10 for diversity).
+        disliked_terms: List of product terms to exclude from results.
         
     Returns:
         List of products or None if RAG is unavailable/empty.
@@ -49,22 +51,39 @@ def _search_with_rag(
         
         logger.info(f"[RAG] get_products_for_state returned {len(results) if results else 0} results")
         
-        # Filter out-of-stock products
-        if results:
-            in_stock_results = [p for p in results if p.get("in_stock", True)]
-            removed = len(results) - len(in_stock_results)
-            if removed > 0:
-                logger.info(f"[RAG] Filtered out {removed} out-of-stock products")
-            results = in_stock_results
+        # Filter disliked terms
+        if results and disliked_terms:
+            filtered_results = []
+            for p in results:
+                # Combine title, description and tags for checking safely
+                p_title = p.get("title") or ""
+                p_desc = p.get("description") or ""
+                p_tags = p.get("tags") or []
+                
+                text_to_check = (
+                    str(p_title) + " " + 
+                    str(p_desc) + " " + 
+                    " ".join([str(t) for t in p_tags])
+                ).lower()
+                
+                is_disliked = False
+                for term in disliked_terms:
+                    if term.lower() in text_to_check:
+                        is_disliked = True
+                        break
+                
+                if not is_disliked:
+                    filtered_results.append(p)
+                else:
+                    logger.info(f"[RAG] Excluded product due to disliked terms: {p.get('title')}")
+            
+            results = filtered_results
         
         if results:
             for i, p in enumerate(results[:3]):
                 logger.info(f"[RAG]   Result {i+1}: {p.get('title', 'N/A')} (in_stock={p.get('in_stock')})")
         
         # Return None if RAG returned no results (may need fallback)
-        if not results:
-            logger.info("[RAG] No results, returning None for fallback")
-            return None
         
         return results
         
@@ -139,7 +158,8 @@ def action_search_products(
             logger = logging.getLogger(__name__)
             
             # Try RAG first (semantic search)
-            results = _search_with_rag(tenant, query, limit=5)
+            disliked_terms = state.soft_context.get("disliked_terms", [])
+            results = _search_with_rag(tenant, query, limit=10, disliked_terms=disliked_terms)
             search_method = "rag"
             
             logger.info(f"[SEARCH] RAG returned {len(results) if results else 0} results for '{query}'")

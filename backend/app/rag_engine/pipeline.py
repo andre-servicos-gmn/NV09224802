@@ -128,17 +128,19 @@ class RAGPipeline:
         self,
         query: str,
         limit: int = 5,
+        only_in_stock: bool = True,
     ) -> list[dict]:
         """Get products formatted for ConversationState.selected_products.
         
         Args:
             query: User's search query.
             limit: Maximum results.
+            only_in_stock: Whether to filter out of stock products.
             
         Returns:
             List of product dicts compatible with existing state format.
         """
-        products = self.search_products(query, limit=limit)
+        products = self.search_products(query, limit=limit, only_in_stock=only_in_stock)
         
         return [
             {

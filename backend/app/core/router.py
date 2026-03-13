@@ -208,6 +208,16 @@ def apply_entities_to_state(state, entities: dict) -> None:
     # Map extracted search query to state
     if entities.get("search_query"):
         state.search_query = entities["search_query"]
+        
+    # Map extracted disliked terms to state
+    if entities.get("disliked_terms"):
+        # Append to existing list to maintain history
+        existing_disliked = set(state.soft_context.get("disliked_terms", []))
+        new_disliked = entities["disliked_terms"]
+        if isinstance(new_disliked, str):
+            new_disliked = [new_disliked]
+        existing_disliked.update(new_disliked)
+        state.soft_context["disliked_terms"] = list(existing_disliked)
     
     state.soft_context["entities"] = entities
 

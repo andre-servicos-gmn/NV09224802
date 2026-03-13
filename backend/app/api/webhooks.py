@@ -742,6 +742,8 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     if not message:
         logger.warning(f"Payload could not be parsed as a message: {payload}")
         return {"success": True, "event": "non_message_event"}
+        
+
     
     # Anti-loop & Deduplication checks
     if _is_echo_message(message.text):
