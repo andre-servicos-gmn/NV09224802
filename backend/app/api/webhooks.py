@@ -661,6 +661,13 @@ async def shopify_webhook(
         }
 
 
+@router.get("/whatsapp/{tenant_id}", status_code=status.HTTP_200_OK, include_in_schema=False)
+@router.get("/whatsapp/{tenant_id}/messages-upsert", status_code=status.HTTP_200_OK, include_in_schema=False)
+async def whatsapp_webhook_verify(tenant_id: str):
+    """Webhook verification endpoint for Evolution API."""
+    return {"status": "ok", "tenant_id": tenant_id}
+
+
 @router.post("/whatsapp/{tenant_id}/messages-upsert", status_code=status.HTTP_200_OK, include_in_schema=False)
 @router.post(
     "/whatsapp/{tenant_id}",
