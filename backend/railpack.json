@@ -1,0 +1,23 @@
+{
+    "$schema": "https://schema.railpack.com",
+    "provider": "python",
+    "steps": {
+        "install": {
+            "commands": [
+                "pip install -r requirements.txt",
+                "pip install -e ."
+            ]
+        },
+        "build": {
+            "inputs": [
+                {
+                    "step": "install"
+                }
+            ],
+            "commands": []
+        }
+    },
+    "deploy": {
+        "startCommand": "uvicorn app.api.main:app --host 0.0.0.0 --port $PORT"
+    }
+}
