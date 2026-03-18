@@ -7,6 +7,7 @@ import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 
 const nextConfig: NextConfig = {
+  output: 'standalone',
   env: {
     // Map backend env vars to Frontend public vars
     NEXT_PUBLIC_SUPABASE_URL: process.env.SUPABASE_URL,
