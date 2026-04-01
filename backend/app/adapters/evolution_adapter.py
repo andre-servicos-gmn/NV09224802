@@ -105,8 +105,10 @@ class EvolutionAdapter(WhatsAppAdapterBase):
             if any(k in message_content for k in media_types):
                 text = "[MEDIA]"
         
+        logger.info(f"DEBUG PARSING: phone={phone}, text='{text}', message_content={message_content}")
+        
         if not text:
-            logger.debug("No text content in message")
+            logger.error(f"❌ No text content in message! Full payload was: {payload}")
             return None
         
         return WhatsAppMessage(
@@ -117,6 +119,7 @@ class EvolutionAdapter(WhatsAppAdapterBase):
             timestamp=data.get("messageTimestamp", 0),
             is_group="@g.us" in remote_jid,
             group_id=remote_jid if "@g.us" in remote_jid else None,
+            push_name=data.get("pushName"),
             raw_payload=payload,
         )
     

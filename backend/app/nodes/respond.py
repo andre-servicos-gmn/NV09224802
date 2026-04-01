@@ -135,8 +135,18 @@ def respond(state: ConversationState, tenant: TenantConfig) -> ConversationState
         return _fallback_response(state)
 
 
+_SYSTEM_ERROR_MESSAGES = {
+    "llm_timeout": "Demorei um pouco mais que o esperado. Pode repetir sua mensagem?",
+    "llm_unavailable": "Estou com dificuldades técnicas no momento. Tente novamente em instantes.",
+    "shopify_timeout": "O sistema de checkout está lento agora. Pode tentar novamente em instantes?",
+    "rate_limit": "Muitas requisições simultâneas. Aguarde um momento e tente novamente.",
+}
+
+
 def _fallback_response(state: ConversationState) -> ConversationState:
-    """Fallback response when LLM fails."""
-    state.last_bot_message = "Desculpe, tive um problema tecnico. Pode repetir?"
+    """Fallback response when LLM fails — usa system_error para mensagem contextualizada."""
+    error_key = state.system_error or state.soft_context.get("response_error", "")
+    message = _SYSTEM_ERROR_MESSAGES.get(error_key, "Desculpe, tive um problema técnico. Pode repetir?")
+    state.last_bot_message = message
     state.soft_context["response_model"] = "fallback"
     return state

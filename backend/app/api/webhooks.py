@@ -172,12 +172,13 @@ async def _bg_persist_message(tenant_id: str, session_id: str, message: Any, cre
             tenant_id=tenant_id,  # This is already the UUID from whatsapp_webhook
             session_id=session_id,
             channel="whatsapp",
-            number=message.from_number
+            number=message.from_number,
+            push_name=getattr(message, "push_name", None),
         )
         conversation_id = conversation.get("id")
         
         # Blocking I/O - Save Message
-        saved = await asyncio.to_thread(
+        await asyncio.to_thread(
             save_message,
             conversation_id=conversation_id,
             sender_type="user",
@@ -308,8 +309,8 @@ async def process_consolidated_message(
 
         # Handle Reset Command
         if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
-            from app.core.session_store import clear_session
-            clear_session(tenant.tenant_id, session_id)
+            from app.core.session_store_v2 import clear_session
+            clear_session(tenant_uuid, session_id)
             logger.info(f"🔄 Session reset requested for {session_id}")
             await adapter.send_text_message(
                 to=session_id,  # session_id is the phone number
@@ -318,14 +319,16 @@ async def process_consolidated_message(
             return
 
         # Session management
-        state = get_session(tenant.tenant_id, session_id)
-        
+        state = get_session(tenant_uuid, session_id)
+
         if state:
+            # Limpa flags efêmeras do turno anterior antes de processar novo input
+            state.clear_turn_flags()
             state.last_user_message = text
             state.add_to_history("user", text)
         else:
             state = ConversationState(
-                tenant_id=tenant.tenant_id,
+                tenant_id=tenant_uuid,
                 session_id=session_id,
                 channel="whatsapp",
                 last_user_message=text,
@@ -456,18 +459,31 @@ async def process_consolidated_message(
             clean_phone = "".join(c for c in raw_phone if c.isdigit())
             if clean_phone:
                 state.customer_phone = clean_phone
-                state.metadata["customer_phone_raw"] = clean_phone
+                state.soft_context["customer_phone_raw"] = clean_phone
 
-        # Process with AI agent/graph
-        result_state = await asyncio.to_thread(run_main_graph, state, tenant)
-        
+        # Process with AI agent/graph (timeout global de 25s)
+        try:
+            result_state = await asyncio.wait_for(
+                asyncio.to_thread(run_main_graph, state, tenant),
+                timeout=25.0,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[TIMEOUT] Graph excedeu 25s para session={session_id}")
+            state.system_error = "llm_timeout"
+            await adapter.send_text_message(
+                to=from_number,
+                text="Demorei mais que o esperado para responder. Pode repetir sua mensagem?",
+            )
+            save_session(tenant_uuid, session_id, state)
+            return
+
         response_text = result_state.last_bot_message
         
         if response_text:
             # Record sent message for anti-loop
             _record_sent_message(response_text)
             
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
             await adapter.mark_as_read(message_id)
             
@@ -514,7 +530,7 @@ async def process_consolidated_message(
             if 'send_result' in locals() and not send_result.success:
                 logger.error(f"Failed to send WhatsApp response: {send_result.error}")
         else:
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
     except Exception as e:
         logger.error(f"Error processing WhatsApp message: {e}", exc_info=True)
@@ -664,44 +680,11 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     
     # Get tenant config (Async)
     try:
-        if tenant_id == "demo":
-            # Mock demo tenant for local debugging
-            from app.core.tenancy import TenantConfig
-            tenant = TenantConfig(
-                tenant_id="demo",
-                name="Demo Store",
-                whatsapp_provider="evolution",
-                whatsapp_instance_url="https://nouvaris-evolution-api.ojdb99.easypanel.host",
-                whatsapp_api_key="3507B4BFABD9-4F3B-B87E-E441338CF369",
-                whatsapp_instance_name="nouvaris",
-                active=True
-            )
-        else:
-            registry = TenantRegistry()
-            tenant = await registry.get_async(tenant_id, use_cache=True)
+        registry = TenantRegistry()
+        tenant = await registry.get_async(tenant_id, use_cache=True)
     except ValueError:
         logger.error(f"❌ Tenant not found in registry: {tenant_id}")
-        # We will not raise HTTPException to allow failsafe logic to run
-        # FAILSAFE: Always use Mock/Demo tenant for testing locally
-        # This redirects ANY incoming webhook to the seeded "Demo Store" so it shows up in the panel
-        logger.warning(f"⚠️ Tenant '{tenant_id}' not found. Redirecting to DEMO tenant.")
-        
-        # FORCE tenant_id to the one we seeded in the DB
-        # This ensures persistence works (FK checks) and Realtime triggers for the Demo dashboard
-        original_tenant_id = tenant_id
-        tenant_id = "c35fe360-dc69-4997-9d1f-ae57f4d8a135"
-        
-        from app.core.tenancy import TenantConfig
-        tenant = TenantConfig(
-            tenant_id="demo",
-            uuid=tenant_id,
-            name="Demo Store",
-            active=True,
-            whatsapp_provider="evolution",
-            whatsapp_instance_name="test_instance",
-            whatsapp_instance_url="http://localhost:8080",
-            whatsapp_api_key="mock_key"
-        )
+        raise HTTPException(status_code=404, detail=f"Tenant '{tenant_id}' not found")
 
     
     # Get WhatsApp adapter
@@ -779,7 +762,7 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
 
 # --- Catch-All: Silently ignore all other Evolution API event sub-routes ---
 @router.post("/whatsapp/{tenant_id}/{event_type}", status_code=status.HTTP_200_OK, include_in_schema=False)
-async def whatsapp_ignore_event(tenant_id: str, event_type: str):
+async def whatsapp_ignore_event(_tenant_id: str, event_type: str):
     """Silently ignore non-message events (presence-update, messages-update, send-message, etc.)."""
     return {"success": True, "event": "ignored", "type": event_type}
 

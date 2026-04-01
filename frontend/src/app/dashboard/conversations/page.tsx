@@ -21,7 +21,8 @@ import {
     Play,
     ChevronLeft,
     ChevronRight,
-    Check
+    Check,
+    Download
 } from "lucide-react";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -48,6 +49,7 @@ interface Message {
     domain: string | null;
     metadata: Record<string, unknown> | null;
     created_at: string;
+    is_internal?: boolean;
 }
 
 type Tab = "active" | "handoff" | "closed";
@@ -78,6 +80,8 @@ export default function ConversationsPage() {
     const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
     const [messageInput, setMessageInput] = useState("");
+    const [isInternal, setIsInternal] = useState(false);
+    const [exporting, setExporting] = useState(false);
 
     const [loadingConversations, setLoadingConversations] = useState(false);
     const [loadingMessages, setLoadingMessages] = useState(false);
@@ -155,7 +159,7 @@ export default function ConversationsPage() {
             const res = await fetch(`${BACKEND_URL}/conversations/${selectedConversation.id}/send-message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ content: messageInput })
+                body: JSON.stringify({ content: messageInput, is_internal: isInternal })
             });
 
             const data = await res.json();
@@ -243,6 +247,32 @@ export default function ConversationsPage() {
             showToast("error", "Erro ao pausar agente");
         } finally {
             setPausingAgent(false);
+        }
+    };
+
+    const handleExportHistory = async () => {
+        if (!tenantId) return;
+        setExporting(true);
+        try {
+            const res = await fetch(`${BACKEND_URL}/conversations/export/history?tenant_id=${tenantId}`);
+            if (!res.ok) throw new Error("Erro na exportação");
+            const data = await res.json();
+            
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `historico-${tenantId}-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showToast("success", "Histórico exportado com sucesso");
+        } catch (err) {
+            showToast("error", "Erro ao exportar histórico");
+        } finally {
+            setExporting(false);
         }
     };
 
@@ -429,8 +459,16 @@ export default function ConversationsPage() {
                     </div>
                 </div>
 
-                {/* Search */}
-                <div className="p-3 border-b border-white/[0.06]">
+                {/* Export & Search Container */}
+                <div className="p-3 border-b border-white/[0.06] flex flex-col gap-3">
+                    <button
+                        onClick={handleExportHistory}
+                        disabled={exporting}
+                        className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] rounded-lg text-sm text-zinc-300 font-medium transition-colors disabled:opacity-50"
+                    >
+                        {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                        Exportar Histórico
+                    </button>
                     <div className="relative">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
                         <input
@@ -621,6 +659,8 @@ export default function ConversationsPage() {
                                             >
                                                 <div className={`h-8 w-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.sender_type === "user"
                                                     ? "bg-zinc-700"
+                                                    : isHuman && msg.is_internal
+                                                        ? "bg-yellow-500/20"
                                                     : isHuman
                                                         ? "bg-emerald-500/20"
                                                         : msg.sender_type === "agent"
@@ -629,6 +669,8 @@ export default function ConversationsPage() {
                                                     }`}>
                                                     {msg.sender_type === "user" ? (
                                                         <User className="h-4 w-4 text-zinc-300" />
+                                                    ) : isHuman && msg.is_internal ? (
+                                                        <User className="h-4 w-4 text-yellow-400" />
                                                     ) : isHuman ? (
                                                         <User className="h-4 w-4 text-emerald-400" />
                                                     ) : msg.sender_type === "agent" ? (
@@ -641,12 +683,15 @@ export default function ConversationsPage() {
                                                     }`}>
                                                     <div className={`px-4 py-2 rounded-2xl text-sm ${msg.sender_type === "user"
                                                         ? "bg-white/[0.06] text-white rounded-tl-sm"
+                                                        : isHuman && msg.is_internal
+                                                            ? "bg-[#fffcd6] text-black rounded-tr-sm"
                                                         : isHuman
                                                             ? "bg-emerald-500/20 text-white rounded-tr-sm"
                                                             : msg.sender_type === "agent"
                                                                 ? "bg-indigo-500/20 text-white rounded-tr-sm"
                                                                 : "bg-yellow-500/10 text-yellow-200 rounded-tl-sm italic"
                                                         }`}>
+                                                        {isHuman && msg.is_internal && <div className="text-[10px] font-bold uppercase mb-1 opacity-60">Nota Interna</div>}
                                                         {msg.content}
                                                     </div>
                                                     <div className={`text-xs text-zinc-500 mt-1 ${msg.sender_type === "agent" ? "text-right" : ""
@@ -669,27 +714,43 @@ export default function ConversationsPage() {
                                     Conversa encerrada. Não é possível enviar mensagens.
                                 </div>
                             ) : (
-                                <div className="flex gap-3">
-                                    <input
-                                        type="text"
-                                        placeholder="Digite sua mensagem..."
-                                        value={messageInput}
-                                        onChange={(e) => setMessageInput(e.target.value)}
-                                        onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendMessage()}
-                                        disabled={sendingMessage}
-                                        className="flex-1 px-4 py-3 bg-white/[0.03] border border-white/[0.06] rounded-xl text-white placeholder:text-zinc-500 focus:outline-none focus:border-indigo-500/50 disabled:opacity-50"
-                                    />
-                                    <button
-                                        onClick={handleSendMessage}
-                                        disabled={!messageInput.trim() || sendingMessage}
-                                        className="px-4 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 disabled:hover:bg-indigo-500 rounded-xl transition-all flex items-center gap-2"
-                                    >
-                                        {sendingMessage ? (
-                                            <Loader2 className="h-5 w-5 text-white animate-spin" />
-                                        ) : (
-                                            <Send className="h-5 w-5 text-white" />
-                                        )}
-                                    </button>
+                                <div className="flex flex-col gap-2">
+                                    <div className="flex bg-white/[0.03] rounded-lg p-1 w-fit">
+                                        <button 
+                                            onClick={() => setIsInternal(false)}
+                                            className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all ${!isInternal ? "bg-white/[0.1] text-white" : "text-zinc-500 hover:text-zinc-300"}`}
+                                        >
+                                            Responder Cliente
+                                        </button>
+                                        <button 
+                                            onClick={() => setIsInternal(true)}
+                                            className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all ${isInternal ? "bg-[#fffcd6] text-black shadow-sm" : "text-zinc-500 hover:text-zinc-300"}`}
+                                        >
+                                            Nota Interna
+                                        </button>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <input
+                                            type="text"
+                                            placeholder="Digite sua mensagem..."
+                                            value={messageInput}
+                                            onChange={(e) => setMessageInput(e.target.value)}
+                                            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendMessage()}
+                                            disabled={sendingMessage}
+                                            className={`flex-1 px-4 py-3 border border-white/[0.06] rounded-xl focus:outline-none focus:border-indigo-500/50 disabled:opacity-50 transition-colors ${isInternal ? "bg-[#fffcd6] text-black placeholder:text-black/50 font-medium" : "bg-white/[0.03] text-white placeholder:text-zinc-500"}`}
+                                        />
+                                        <button
+                                            onClick={handleSendMessage}
+                                            disabled={!messageInput.trim() || sendingMessage}
+                                            className="px-4 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 disabled:hover:bg-indigo-500 rounded-xl transition-all flex items-center gap-2"
+                                        >
+                                            {sendingMessage ? (
+                                                <Loader2 className="h-5 w-5 text-white animate-spin" />
+                                            ) : (
+                                                <Send className="h-5 w-5 text-white" />
+                                            )}
+                                        </button>
+                                    </div>
                                 </div>
                             )}
                         </div>

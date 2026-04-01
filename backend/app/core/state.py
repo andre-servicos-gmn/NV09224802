@@ -106,6 +106,28 @@ class ConversationState(BaseModel):
         """Limpa o contexto RAG para não contaminar a próxima resposta"""
         self.rag_context = None
 
+    # Flags que não devem persistir entre turnos — limpas no início de cada ciclo
+    _EPHEMERAL_SOFT_CONTEXT_KEYS: set = {
+        "user_confirmed_previous_offer",
+        "confirmation_text",
+        "is_simple_confirmation",
+        "keep_current_domain",
+        "keep_current_intent",
+        "out_of_stock",
+        "out_of_stock_message",
+        "search_error",
+        "select_variant_error",
+        "response_error",
+        "wismo_needs",
+    }
+
+    def clear_turn_flags(self) -> None:
+        """Limpa flags efêmeras do soft_context que não devem persistir entre turnos."""
+        for key in self._EPHEMERAL_SOFT_CONTEXT_KEYS:
+            self.soft_context.pop(key, None)
+        # Limpa também system_error para não vazar para o próximo turno
+        self.system_error = None
+
     def set_intent(self, intent: str) -> None:
         """Define a intenção e limpa estados incompatíveis se necessário."""
         self.intent = intent

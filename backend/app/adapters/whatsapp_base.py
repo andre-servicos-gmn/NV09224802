@@ -21,6 +21,7 @@ class WhatsAppMessage:
     group_id: Optional[str] = None
     media_type: Optional[str] = None  # "image", "audio", "video", "document"
     media_url: Optional[str] = None
+    push_name: Optional[str] = None   # Contact display name (from WhatsApp)
     raw_payload: Optional[dict] = None  # Original provider payload for debugging
 
 

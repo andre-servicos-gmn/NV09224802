@@ -46,10 +46,12 @@ class MessageOut(BaseModel):
     domain: Optional[str] = None
     metadata: Optional[dict] = None
     created_at: str
+    is_internal: bool = False
 
 
 class SendMessageRequest(BaseModel):
     content: str
+    is_internal: bool = False
 
 
 class SendMessageResponse(BaseModel):
@@ -128,7 +130,7 @@ async def get_conversation_messages(
     
     try:
         result = supabase.table("messages").select(
-            "id, conversation_id, sender_type, content, intent, domain, metadata, created_at"
+            "id, conversation_id, sender_type, content, intent, domain, metadata, created_at, is_internal"
         ).eq("conversation_id", conversation_id).order("created_at", ascending=True).limit(limit).execute()
         
         return {
@@ -175,6 +177,7 @@ async def send_human_message(conversation_id: str, request: SendMessageRequest):
             conversation_id=conversation_id,
             sender_type="agent",
             content=request.content,
+            is_internal=request.is_internal,
             metadata={
                 "source": "human_panel",
                 "sent_by": "human_agent"
@@ -205,7 +208,7 @@ async def send_human_message(conversation_id: str, request: SendMessageRequest):
         whatsapp_sent = False
         whatsapp_error = None
         
-        if channel == "whatsapp" and phone_number and tenant_id:
+        if channel == "whatsapp" and phone_number and tenant_id and not request.is_internal:
             try:
                 # Get tenant config for WhatsApp credentials
                 registry = TenantRegistry()
@@ -253,7 +256,8 @@ async def send_human_message(conversation_id: str, request: SendMessageRequest):
                     "whatsapp_sent": whatsapp_sent,
                     "whatsapp_error": whatsapp_error
                 },
-                created_at=saved.get("created_at", "")
+                created_at=saved.get("created_at", ""),
+                is_internal=request.is_internal
             )
         )
     except Exception as e:
@@ -358,3 +362,46 @@ async def pause_agent(conversation_id: str):
     except Exception as e:
         logger.error(f"Failed to pause agent: {e}")
         raise HTTPException(status_code=500, detail="Failed to pause agent")
+
+
+@router.get("/export/history")
+async def export_history(tenant_id: str = Query(..., description="Tenant UUID")):
+    """Export all conversations and related messages for a tenant as a JSON dump."""
+    supabase = get_supabase()
+    
+    try:
+        # Fetch all conversations for the tenant
+        convs_res = supabase.table("conversations").select("*").eq("tenant_id", tenant_id).execute()
+        conversations = convs_res.data or []
+        
+        if not conversations:
+            return {"tenant_id": tenant_id, "total_conversations": 0, "total_messages": 0, "conversations": []}
+            
+        conv_ids = [c["id"] for c in conversations]
+        
+        # Fetch all messages for these conversations
+        msgs_res = supabase.table("messages").select("*").in_("conversation_id", conv_ids).execute()
+        messages = msgs_res.data or []
+        
+        # Group messages by conversation_id
+        msgs_by_conv = {}
+        for m in messages:
+            cid = m["conversation_id"]
+            if cid not in msgs_by_conv:
+                msgs_by_conv[cid] = []
+            msgs_by_conv[cid].append(m)
+            
+        # Attach messages to conversations
+        for c in conversations:
+            c_msgs = msgs_by_conv.get(c["id"], [])
+            c["messages"] = sorted(c_msgs, key=lambda x: x.get("created_at", ""))
+            
+        return {
+            "tenant_id": tenant_id,
+            "total_conversations": len(conversations),
+            "total_messages": len(messages),
+            "conversations": conversations
+        }
+    except Exception as e:
+        logger.error(f"Failed to export history: {e}")
+        raise HTTPException(status_code=500, detail="Failed to export history")

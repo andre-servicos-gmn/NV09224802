@@ -119,6 +119,7 @@ def create_conversation(
     channel: str = "whatsapp",
     domain: str = "store_qa",
     number: str | None = None,
+    push_name: str | None = None,
 ) -> dict:
     """Create a new conversation with all required fields."""
     client = get_client()
@@ -135,6 +136,8 @@ def create_conversation(
         data["user_id"] = str(user_id)
     if number:
         data["number"] = str(number)
+    if push_name:
+        data["push_name"] = push_name
 
     result = client.table("conversations").insert(data).execute()
     return result.data[0] if result.data else {}
@@ -160,15 +163,20 @@ def get_or_create_conversation(
     channel: str = "whatsapp",
     domain: str = "store_qa",
     number: str | None = None,
+    push_name: str | None = None,
 ) -> dict:
     """Get existing conversation or create a new one with proper defaults."""
     conversation = get_conversation_by_session(tenant_id, session_id)
     if conversation:
-        # Update number if provided and not already set
+        updates = {}
         if number and not conversation.get("number"):
+            updates["number"] = number
+        if push_name and not conversation.get("push_name"):
+            updates["push_name"] = push_name
+        if updates:
             client = get_client()
-            client.table("conversations").update({"number": number}).eq("id", conversation["id"]).execute()
-            conversation["number"] = number
+            client.table("conversations").update(updates).eq("id", conversation["id"]).execute()
+            conversation.update(updates)
 
         # Auto-Reactivation Check
         if conversation.get("status") == "closed":
@@ -192,7 +200,7 @@ def get_or_create_conversation(
         return conversation
 
 
-    return create_conversation(str(tenant_id), str(session_id), user_id, channel, domain, number)
+    return create_conversation(str(tenant_id), str(session_id), user_id, channel, domain, number, push_name)
 
 
 def update_conversation_state(conversation_id: str, state: dict) -> dict:
@@ -225,6 +233,7 @@ def save_message(
     domain: str | None = None,
     metadata: dict | None = None,
     created_at: str | None = None,
+    is_internal: bool = False,
 ) -> dict:
     """Save a message to the conversation.
     
@@ -236,6 +245,7 @@ def save_message(
         domain: Domain (sales, support, store_qa)
         metadata: Additional metadata dict
         created_at: Optional ISO timestamp to force specific time
+        is_internal: Whether this message is an internal note
     """
     client = get_client()
     data = {
@@ -251,6 +261,8 @@ def save_message(
         data["metadata"] = metadata
     if created_at:
         data["created_at"] = created_at
+    if is_internal:
+        data["is_internal"] = is_internal
 
     try:
         # Save message

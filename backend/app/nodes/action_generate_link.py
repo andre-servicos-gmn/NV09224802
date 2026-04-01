@@ -13,6 +13,7 @@ from app.core.state import ConversationState
 from app.core.strategies import next_strategy
 from app.core.tenancy import TenantConfig
 from app.tools.shopify_client import ShopifyClient
+from app.core.cache import get_cached_inventory, set_cached_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,10 @@ def action_generate_link(
                 access_token=tenant.shopify_access_token,
                 api_version=tenant.shopify_api_version,
             )
-            inventory = client.check_inventory(selected_variant_id)
+            inventory = get_cached_inventory(selected_variant_id)
+            if inventory is None:
+                inventory = client.check_inventory(selected_variant_id)
+                set_cached_inventory(selected_variant_id, inventory)
             if not inventory.get("available", False):
                 state.last_action = "generate_link"
                 state.last_strategy = strategy

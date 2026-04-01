@@ -16,6 +16,10 @@ import requests
 from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
 from app.tools.shopify_client import ShopifyClient
+from app.core.cache import (
+    get_cached_order, set_cached_order,
+    get_cached_tracking, set_cached_tracking,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,37 +201,61 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
     if "search_query" in state.soft_context:
         del state.soft_context["search_query"]
 
+    tid = tenant.tenant_id
+
     # --- Estratégia 1: Telefone do WhatsApp (abordagem invisível) ---
     phone = state.customer_phone or state.soft_context.get("customer_phone_raw")
     if phone and not order:
-        try:
-            orders = client.get_orders_by_phone(phone)
-            if orders:
-                order = orders[0]
-                identified_by = "phone"
-                logger.info(f"[action_get_order] Pedido encontrado por telefone: #{order['order_number']}")
-        except Exception as e:
-            logger.warning(f"[action_get_order] Busca por telefone falhou: {e}")
+        cached = get_cached_order(tid, f"phone:{phone}")
+        if cached:
+            order = cached
+            identified_by = "phone"
+            logger.info(f"[action_get_order] Cache HIT por telefone: #{order['order_number']}")
+        else:
+            try:
+                orders = client.get_orders_by_phone(phone)
+                if orders:
+                    order = orders[0]
+                    identified_by = "phone"
+                    set_cached_order(tid, f"phone:{phone}", order)
+                    logger.info(f"[action_get_order] Pedido encontrado por telefone: #{order['order_number']}")
+            except Exception as e:
+                logger.warning(f"[action_get_order] Busca por telefone falhou: {e}")
 
     # --- Estratégia 2: E-mail ---
     if not order and state.customer_email:
-        try:
-            orders = client.get_orders_by_email(state.customer_email)
-            if orders:
-                order = orders[0]
-                identified_by = "email"
-                logger.info(f"[action_get_order] Pedido encontrado por e-mail: #{order['order_number']}")
-        except Exception as e:
-            logger.warning(f"[action_get_order] Busca por e-mail falhou: {e}")
+        cached = get_cached_order(tid, f"email:{state.customer_email}")
+        if cached:
+            order = cached
+            identified_by = "email"
+            logger.info(f"[action_get_order] Cache HIT por e-mail: #{order['order_number']}")
+        else:
+            try:
+                orders = client.get_orders_by_email(state.customer_email)
+                if orders:
+                    order = orders[0]
+                    identified_by = "email"
+                    set_cached_order(tid, f"email:{state.customer_email}", order)
+                    logger.info(f"[action_get_order] Pedido encontrado por e-mail: #{order['order_number']}")
+            except Exception as e:
+                logger.warning(f"[action_get_order] Busca por e-mail falhou: {e}")
 
     # --- Estratégia 3: Número do pedido informado pelo cliente ---
     if not order and state.order_id:
-        try:
-            order = client.get_order_by_number(state.order_id)
+        cached = get_cached_order(tid, f"order_id:{state.order_id}")
+        if cached:
+            order = cached
             identified_by = "order_id"
-            logger.info(f"[action_get_order] Pedido encontrado por order_id: #{order['order_number']}")
-        except Exception as e:
-            logger.warning(f"[action_get_order] Busca por order_id falhou: {e}")
+            logger.info(f"[action_get_order] Cache HIT por order_id: #{order['order_number']}")
+        else:
+            try:
+                order = client.get_order_by_number(state.order_id)
+                identified_by = "order_id"
+                if order:
+                    set_cached_order(tid, f"order_id:{state.order_id}", order)
+                logger.info(f"[action_get_order] Pedido encontrado por order_id: #{order['order_number']}")
+            except Exception as e:
+                logger.warning(f"[action_get_order] Busca por order_id falhou: {e}")
 
     # --- Nenhum dado disponível: pedir e-mail ao cliente ---
     if not order and not phone and not state.customer_email and not state.order_id:
@@ -273,10 +301,15 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
     # --- Consulta logística (se pedido tem código de rastreio) ---
     if state.tracking_code:
-        tracking_result = _fetch_tracking_event(
-            state.tracking_code,
-            order.get("tracking_company"),
-        )
+        tracking_result = get_cached_tracking(state.tracking_code)
+        if tracking_result:
+            logger.info(f"[action_get_order] Cache HIT tracking: {state.tracking_code}")
+        else:
+            tracking_result = _fetch_tracking_event(
+                state.tracking_code,
+                order.get("tracking_company"),
+            )
+            set_cached_tracking(state.tracking_code, tracking_result)
         if tracking_result.get("last_event"):
             state.tracking_last_event = tracking_result["last_event"]
             if tracking_result.get("delivered"):

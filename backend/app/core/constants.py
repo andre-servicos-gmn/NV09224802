@@ -20,6 +20,9 @@ INTENT_PROVIDE_ORDER_ID = "provide_order_id"
 INTENT_PROVIDE_EMAIL = "provide_email"
 INTENT_MEDIA_UNSUPPORTED = "media_unsupported"
 INTENT_GENERAL = "general"
+INTENT_CHECKOUT_ISSUE = INTENT_CHECKOUT_ERROR  # alias for backwards compat
+INTENT_TECHNICAL_ISSUE = "technical_issue"
+INTENT_OUT_OF_SCOPE = "out_of_scope"
 DEFAULT_INTENT = INTENT_GENERAL
 
 INTENT_DESCRIPTIONS: dict[str, str] = {

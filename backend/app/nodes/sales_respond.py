@@ -89,7 +89,7 @@ def sales_respond(state: ConversationState, tenant: TenantConfig) -> Conversatio
     user_prompt_lines.append(f"MENSAGEM ATUAL DO CLIENTE: {state.last_user_message}")
     
     # Inject Search Results if available
-    search_results = state.metadata.get("search_results")
+    search_results = state.soft_context.get("search_results")
     if search_results:
         user_prompt_lines.append("\n[RESULTADOS DA BUSCA]")
         for idx, item in enumerate(search_results, 1):

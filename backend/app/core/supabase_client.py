@@ -54,6 +54,10 @@ class SupabaseClient:
         """
         return TableQuery(self, table_name)
     
+    def rpc(self, function_name: str, params: dict) -> "RpcQuery":
+        """Call a Postgres function via PostgREST RPC."""
+        return RpcQuery(self, function_name, params)
+
     @property
     def storage(self) -> "StorageClient":
         """Acesso ao Storage."""
@@ -381,6 +385,22 @@ class TableQuery:
         )
         response.raise_for_status()
         
+        return QueryResponse(response.json())
+
+
+class RpcQuery:
+    """Executa chamadas RPC (funções Postgres) via PostgREST."""
+
+    def __init__(self, client: SupabaseClient, function_name: str, params: dict) -> None:
+        self.client = client
+        self.function_name = function_name
+        self.params = params
+
+    def execute(self) -> "QueryResponse":
+        url = f"{self.client.url}/rest/v1/rpc/{self.function_name}"
+        headers = dict(self.client.headers)
+        response = httpx.post(url, json=self.params, headers=headers, timeout=30)
+        response.raise_for_status()
         return QueryResponse(response.json())
 
 

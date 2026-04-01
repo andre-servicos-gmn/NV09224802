@@ -418,14 +418,20 @@ def _get_system_data_payload(
         status_icon = "✅" if state.last_action_success else "⚠️"
         lines.append(f"LAST_ACTION: {state.last_action} ({status_icon} Success: {state.last_action_success})")
         if not state.last_action_success:
-            lines.append("   → ERRO: A última ação falhou. Explique o problema e ofereça alternativa.")
-            # Add error details
-            if state.system_error:
-                lines.append(f"   → SYSTEM ERROR: {state.system_error}")
-            # Check soft_context for specific errors
-            for k, v in state.soft_context.items():
-                if "error" in k:
-                    lines.append(f"   → DEBUG INFO: {k}={v}")
+            # Only prompt the LLM to explain an error if there is actual user-visible error info.
+            # Internal pipeline failures (e.g. update_memory JSON parse error) have no system_error
+            # and no soft_context error keys — they must NOT trigger an apology to the user.
+            has_user_visible_error = bool(
+                state.system_error
+                or any("error" in k for k in state.soft_context)
+            )
+            if has_user_visible_error:
+                lines.append("   → ERRO: A última ação falhou. Explique o problema e ofereça alternativa.")
+                if state.system_error:
+                    lines.append(f"   → SYSTEM ERROR: {state.system_error}")
+                for k, v in state.soft_context.items():
+                    if "error" in k:
+                        lines.append(f"   → DEBUG INFO: {k}={v}")
 
     # 2. CRITICAL LINKS & IDs
     if state.checkout_link:
@@ -535,11 +541,11 @@ def _get_system_data_payload(
             lines.append(f"📧 EMAIL: {state.customer_email}")
         
         # Ticket/Refund context
-        if state.soft_context.get("ticket_id") or state.metadata.get("ticket_id"):
-            tid = state.soft_context.get("ticket_id") or state.metadata.get("ticket_id")
+        if state.soft_context.get("ticket_id"):
+            tid = state.soft_context.get("ticket_id")
             lines.append(f"🎫 TICKET CRIADO: #{tid}")
-        
-        status = state.soft_context.get("order_status") or state.metadata.get("order_status")
+
+        status = state.soft_context.get("order_status") or state.order_status
         if status:
             lines.append(f"📊 STATUS PEDIDO: {status}")
             
@@ -574,13 +580,13 @@ def _get_system_data_payload(
                     "Não peça CPF. Não peça número do pedido ainda."
                 )
 
-        if state.metadata.get("wismo_error") == "order_not_found":
+        if state.soft_context.get("wismo_error") == "order_not_found":
             wismo_context_parts.append(
                 "INSTRUÇÃO: O pedido não foi encontrado com os dados fornecidos. "
                 "Confirme se o e-mail ou número estão corretos, e ofereça abrir um ticket."
             )
 
-        if state.metadata.get("wismo_error") == "shopify_not_configured":
+        if state.soft_context.get("wismo_error") == "shopify_not_configured":
             wismo_context_parts.append(
                 "INSTRUÇÃO: Sistema de pedidos temporariamente indisponível. "
                 "Peça desculpas e ofereça contato humano."
@@ -591,7 +597,7 @@ def _get_system_data_payload(
             lines.extend(wismo_context_parts)
 
     # FAQ answer if available
-    faq_answer = state.metadata.get("faq_answer")
+    faq_answer = state.soft_context.get("faq_answer")
     if faq_answer:
         lines.append(f"- faq_answer: {faq_answer}")
 

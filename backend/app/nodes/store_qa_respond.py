@@ -1,6 +1,5 @@
 """Store Q&A response generation using RAG from Supabase + memory context."""
 
-import os
 import random
 from app.core.llm_humanized import generate_humanized_response
 from app.core.state import ConversationState
@@ -20,9 +19,14 @@ def store_qa_respond(state: ConversationState, tenant: TenantConfig) -> Conversa
             categories=None # Let it figure out from intent/message
         )
     except Exception as e:
-        if os.getenv("DEBUG"):
-            print(f"[store_qa_respond] Error generating response: {e}")
-        response = "Desculpe, tive um problema técnico. Pode repetir?"
+        import logging
+        logging.getLogger(__name__).error(f"[store_qa_respond] LLM error: {e}", exc_info=True)
+        state.system_error = "llm_unavailable"
+        _error_messages = {
+            "llm_timeout": "Demorei um pouco mais que o esperado. Pode repetir sua mensagem?",
+            "llm_unavailable": "Estou com dificuldades técnicas no momento. Tente novamente em instantes.",
+        }
+        response = _error_messages.get(state.system_error, "Desculpe, tive um problema técnico. Pode repetir?")
 
     # Check for resolution tag logic (if the Synthesizer decides to use it based on prompt instructions)
     # Note: The new prompt doesn't explicitly mention [RESOLVED], but we can infer resolution 
