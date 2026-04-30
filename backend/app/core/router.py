@@ -5,8 +5,6 @@ import unicodedata
 from dataclasses import dataclass
 
 from .constants import (
-    INTENT_CART_RETRY,
-    INTENT_CHECKOUT_ERROR,
     INTENT_GENERAL,
     INTENT_GREETING,
     INTENT_ORDER_COMPLAINT,
@@ -17,13 +15,10 @@ from .constants import (
     INTENT_PRODUCT_LINK,
     INTENT_PROVIDE_EMAIL,
     INTENT_PROVIDE_ORDER_ID,
-    INTENT_PURCHASE_INTENT,
     INTENT_RETURN_EXCHANGE,
     INTENT_SEARCH_PRODUCT,
     INTENT_SELECT_PRODUCT,
     INTENT_SELECT_VARIANT,
-    INTENT_ADD_TO_CART,
-    INTENT_VIEW_CART,
     INTENT_SHIPPING_QUESTION,
     INTENT_STORE_QUESTION,
     DEFAULT_INTENT,
@@ -74,15 +69,10 @@ def classify_intent_heuristic(message: str) -> str:
 
 def classify_domain_heuristic(intent: str) -> str:
     sales = {
-        INTENT_PURCHASE_INTENT,
         INTENT_PRODUCT_LINK,
-        INTENT_CART_RETRY,
-        INTENT_CHECKOUT_ERROR,
         INTENT_SEARCH_PRODUCT,
         INTENT_SELECT_PRODUCT,
         INTENT_SELECT_VARIANT,
-        INTENT_ADD_TO_CART,
-        INTENT_VIEW_CART,
         INTENT_GREETING,
         INTENT_GENERAL,
     }
@@ -185,8 +175,6 @@ def sanity_check(domain: str, intent: str, entities: dict, message: str) -> bool
         return False
     if _message_digits_only(message) and intent != INTENT_PROVIDE_ORDER_ID:
         return False
-    if intent in {INTENT_CHECKOUT_ERROR, INTENT_CART_RETRY} and _has_order_terms(message):
-        return False
     return True
 
 
@@ -201,7 +189,7 @@ def _merge_entities(primary: dict, secondary: dict) -> dict:
 def apply_entities_to_state(state, entities: dict) -> None:
     if not entities:
         return
-    
+
     new_order_id = entities.get("order_id")
     if new_order_id:
         # ALWAYS overwrite order_id when user provides a new one
@@ -214,19 +202,19 @@ def apply_entities_to_state(state, entities: dict) -> None:
                 del state.soft_context["order_status"]
             state.soft_context["ticket_opened"] = False
         state.order_id = new_order_id
-    
+
     new_email = entities.get("email")
     if new_email:
         # ALWAYS overwrite email when user provides a new one
         state.customer_email = new_email
-    
+
     if entities.get("product_url") and not state.soft_context.get("product_url"):
         state.soft_context["product_url"] = entities.get("product_url")
 
     # [NEW] Map extracted search query to state
     if entities.get("search_query"):
         state.search_query = entities["search_query"]
-    
+
     state.soft_context["entities"] = entities
 
 

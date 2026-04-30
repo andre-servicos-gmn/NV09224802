@@ -79,7 +79,7 @@ def run_chat(
         print(f"{Colors.FAIL}Error: Tenant '{tenant_id}' not found.{Colors.ENDC}")
         return 1
 
-    state = ConversationState(tenant_id=tenant.tenant_id, session_id=session_id)
+    state = ConversationState(tenant_id=tenant.uuid or tenant.tenant_id, session_id=session_id)
 
     if script_path:
         lines = _load_script_lines(script_path)
@@ -159,7 +159,7 @@ def run_chat(
                 "session_id": state.session_id,
                 "last_domain": state.domain,
                 "last_intent": state.intent,
-                "has_variant_id": bool(state.selected_variant_id),
+                "has_variant_id": bool(state.soft_context.get("selected_variant_id")),
                 "has_order_id": bool(state.order_id),
                 "has_selected_products": bool(state.selected_products),
                 "selected_products_count": len(state.selected_products) if state.selected_products else 0,
@@ -250,7 +250,7 @@ def run_chat(
 
                 # Print Token Usage
                 router_usage = getattr(decision, "token_usage", None) or {}
-                agent_usage = state.metadata.get("token_usage_agent") or {}
+                agent_usage = (getattr(state, "metadata", None) or {}).get("token_usage_agent") or {}
                 
                 def fmt_usage(u):
                     if not u: return "N/A"

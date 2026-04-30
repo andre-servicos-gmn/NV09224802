@@ -22,7 +22,6 @@ class TenantConfig(BaseModel):
     shopify_access_token: str | None = None
     shopify_api_version: str = "2024-01"
     webhook_secret: str | None = None  # Secret for webhook HMAC validation
-    default_link_strategy: str = "permalink"
     brand_voice: str = "curto_humano"
     handoff_message: str = "Vou te colocar com um atendente humano..."
     store_niche: str | None = None
@@ -143,7 +142,6 @@ class TenantRegistry:
             shopify_access_token=actual_token,
             shopify_api_version=data.get("shopify_api_version", "2024-01"),
             webhook_secret=data.get("webhook_secret"),  # For webhook HMAC validation
-            default_link_strategy=data.get("default_link_strategy", "permalink"),
             brand_voice=data.get("brand_voice", "curto_humano"),
             handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),
             store_niche=store_niche,
@@ -256,7 +254,6 @@ class TenantRegistry:
             shopify_access_token=actual_token,
             shopify_api_version=data.get("shopify_api_version", "2024-01"),
             webhook_secret=data.get("webhook_secret"),  # For webhook HMAC validation
-            default_link_strategy=data.get("default_link_strategy", "permalink"),
             brand_voice=data.get("brand_voice", "curto_humano"),
             handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),
             store_niche=store_niche,

@@ -28,7 +28,8 @@ from app.adapters.whatsapp_base import WhatsAppAdapterBase
 from app.core.tenancy import TenantRegistry
 from app.sync.sync_service import SyncService
 from app.core.message_buffer import message_buffer
-from app.core.session_store import get_session, save_session
+from app.core.session_store_v2 import get_session, save_session
+from app.core.database import get_or_create_conversation
 from app.core.state import ConversationState
 # Assumed location based on grep search
 from app.graphs.main_graph import run_main_graph
@@ -232,15 +233,37 @@ async def process_consolidated_message(
         registry = TenantRegistry()
         tenant = registry.get(tenant_id, use_cache=True)
         adapter = _get_whatsapp_adapter(tenant)
-        
+
         if not adapter:
             logger.error(f"WhatsApp adapter could not be recreated for {tenant_id}")
             return
 
+        tenant_uuid = tenant.uuid or tenant.tenant_id
+
+        # Garante que a row em conversations existe antes de qualquer save_session.
+        # get_or_create_conversation é idempotente: SELECT primeiro, INSERT só se não existir.
+        conversation_data = await asyncio.to_thread(
+            get_or_create_conversation,
+            tenant_id=tenant_uuid,
+            session_id=session_id,
+            channel="whatsapp",
+            number=from_number,
+        )
+        if not conversation_data or not conversation_data.get("id"):
+            logger.error(
+                f"[process_consolidated_message] get_or_create_conversation falhou "
+                f"para session={session_id}. Abortando."
+            )
+            return
+
+        if conversation_data.get("status") in ("handoff", "human_active"):
+            logger.info(f"Conversation {session_id} em status {conversation_data['status']}. Agente silenciado.")
+            return
+
         # Handle Reset Command
         if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
-            from app.core.session_store import clear_session
-            clear_session(tenant.tenant_id, session_id)
+            from app.core.session_store_v2 import clear_session
+            clear_session(tenant_uuid, session_id)
             logger.info(f"🔄 Session reset requested for {session_id}")
             await adapter.send_text_message(
                 to=session_id,  # session_id is the phone number
@@ -249,20 +272,28 @@ async def process_consolidated_message(
             return
 
         # Session management
-        state = get_session(tenant.tenant_id, session_id)
-        
+        state = get_session(tenant_uuid, session_id)
+
         if state:
             state.last_user_message = text
             state.add_to_history("user", text)
         else:
             state = ConversationState(
-                tenant_id=tenant.tenant_id,
+                tenant_id=tenant_uuid,
                 session_id=session_id,
                 channel="whatsapp",
                 last_user_message=text,
             )
             state.add_to_history("user", text)
-        
+
+        # Reset campos transitórios do turno passado — esses representam
+        # "resultado da última action" e não devem vazar para o turno atual.
+        state.last_action = None
+        state.last_action_status = None
+        state.last_action_success = None
+        state.system_error = None
+        state.last_strategy = None
+
         # Adjustment 5: Contextual Confirmation Detection
         # If message is simple confirmation AND bot just made an offer
         confirmation_pattern = r'^(sim|quero|pode|ok|ta|tá|beleza|bora|yes|manda|claro|aceito)\W*$'
@@ -340,7 +371,7 @@ async def process_consolidated_message(
             # Record sent message for anti-loop
             _record_sent_message(response_text)
             
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
             await adapter.mark_as_read(message_id)
             
@@ -362,7 +393,7 @@ async def process_consolidated_message(
                     delay = min(1.0 + len(chunk) / 200, 2.5)  # 1.0s–2.5s based on length
                     await asyncio.sleep(delay)
         else:
-            save_session(tenant.tenant_id, session_id, result_state)
+            save_session(tenant_uuid, session_id, result_state)
             
     except Exception as e:
         logger.error(f"Error processing WhatsApp message: {e}", exc_info=True)

@@ -67,6 +67,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
         if not order:
             state.last_action_success = False
+            state.last_action_status = "empty"
             state.soft_context["order_error"] = "order_not_found"
             state.tracking_url = None
             if "tracking_number" in state.soft_context:
@@ -77,6 +78,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
         # Success!
         state.last_action_success = True
+        state.last_action_status = "success"
         # Store internal Shopify ID for technical reference, but keep state.order_id as customer facing number
         if order.get("id"):
             state.soft_context["shopify_order_id"] = str(order.get("id"))
@@ -114,6 +116,7 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
     except Exception as exc:
         state.last_action_success = False
+        state.last_action_status = "system_error"
         state.last_action = "get_order"
         state.soft_context["order_error"] = str(exc)
         state.system_error = str(exc)

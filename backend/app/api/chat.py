@@ -136,7 +136,7 @@ async def chat_endpoint(request: ChatRequest):
     if existing_state and isinstance(existing_state, dict) and existing_state:
         try:
             state = ConversationState(**existing_state)
-            state.tenant_id = tenant.tenant_id
+            state.tenant_id = tenant_uuid
             state.session_id = session_id
             if request.personality_id:
                 state.personality_id = request.personality_id
@@ -145,7 +145,7 @@ async def chat_endpoint(request: ChatRequest):
 
     if not state:
         state = ConversationState(
-            tenant_id=tenant.tenant_id,
+            tenant_id=tenant_uuid,
             session_id=session_id,
             personality_id=request.personality_id or "professional"
         )

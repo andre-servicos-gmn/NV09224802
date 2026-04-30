@@ -24,9 +24,11 @@ def action_open_ticket(state: ConversationState, tenant: TenantConfig) -> Conver
         client.table("support_tickets").upsert(payload).execute_upsert()
         state.soft_context["ticket_opened"] = True
         state.last_action_success = True
+        state.last_action_status = "success"
     except Exception as exc:
         state.soft_context["ticket_opened"] = False
         state.last_action_success = False
+        state.last_action_status = "system_error"
         state.soft_context["ticket_error"] = str(exc)
         state.system_error = str(exc)
         state.bump_frustration()

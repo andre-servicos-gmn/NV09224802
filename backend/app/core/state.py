@@ -10,18 +10,13 @@ class ConversationState(BaseModel):
     
     # --- CÉREBRO E INTENÇÃO ---
     domain: Optional[str] = None          # sales | support | store_qa
-    intent: str = "general"               # checkout_error, search_product, etc.
+    intent: str = "general"               # search_product, order_tracking, etc.
     confidence_score: float = 0.0         # 0.0 a 1.0 (Para decidir Handoff)
     
     # --- MEMÓRIA DE VENDAS (SALES CONTEXT) ---
     search_query: Optional[str] = None
     selected_products: List[dict] = Field(default_factory=list)
     available_variants: List[dict] = Field(default_factory=list)
-    cart_items: List[dict] = Field(default_factory=list)
-    
-    # [NOVO] O Link Sagrado - Diferente de tracking_url!
-    checkout_link: Optional[str] = None   
-    
     # --- MEMÓRIA DE SUPORTE (SUPPORT CONTEXT) ---
     order_id: Optional[str] = None
     customer_email: Optional[str] = None
@@ -63,10 +58,11 @@ class ConversationState(BaseModel):
     # --- FLUXO DO GRAFO (Graph Flow) ---
     next_step: Optional[str] = None         # Para decidir qual nó executar
     last_action: Optional[str] = None       # Último nó/ação executada
-    last_strategy: Optional[str] = None     # Estratégia atual (ex: "permalink", "add_to_cart")
+    last_strategy: Optional[str] = None
     
-    last_action_success: Optional[bool] = None
-    
+    last_action_success: Optional[bool] = None  # DEPRECATED: use last_action_status. Mantido pra compatibilidade.
+    last_action_status: Optional[str] = None    # "success" | "empty" | "system_error" | "skipped" | None
+
     # --- CAMPOS LEGADOS (Para retrocompatibilidade) ---
     tracking_last_update_days: Optional[int] = None  # Usado em router.py
     

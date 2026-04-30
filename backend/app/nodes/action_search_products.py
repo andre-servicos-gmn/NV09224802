@@ -51,21 +51,31 @@ def _search_with_rag(
         
         # Filter out-of-stock products
         if results:
+            raw_count = len(results)
             in_stock_results = [p for p in results if p.get("in_stock", True)]
-            removed = len(results) - len(in_stock_results)
+            removed = raw_count - len(in_stock_results)
             if removed > 0:
                 logger.info(f"[RAG] Filtered out {removed} out-of-stock products")
             results = in_stock_results
-        
+
+            # RAG tinha produtos mas todos out-of-stock: retorna [] (não None).
+            # O caller distingue [] (catálogo tem mas sem estoque) de None (RAG sem dados).
+            if not results:
+                logger.info(
+                    f"[RAG] {raw_count} produto(s) encontrado(s) mas todos out-of-stock "
+                    f"para '{query}'. Retornando [] para sinalizar 'empty' sem fallback REST."
+                )
+                return []
+
         if results:
             for i, p in enumerate(results[:3]):
                 logger.info(f"[RAG]   Result {i+1}: {p.get('title', 'N/A')} (in_stock={p.get('in_stock')})")
-        
-        # Return None if RAG returned no results (may need fallback)
+
+        # Return None if RAG returned nothing at all (caller deve tentar fallback REST)
         if not results:
-            logger.info("[RAG] No results, returning None for fallback")
+            logger.info("[RAG] Sem resultados, retornando None para fallback REST")
             return None
-        
+
         return results
         
     except Exception as e:
@@ -137,6 +147,7 @@ def action_search_products(
 
         if not query:
             state.last_action_success = False
+            state.last_action_status = "skipped"
             state.soft_context["search_error"] = "missing_search_query"
             state.bump_frustration()
         else:
@@ -144,25 +155,52 @@ def action_search_products(
             logger = logging.getLogger(__name__)
             
             # Try RAG first (semantic search)
-            results = _search_with_rag(tenant, query, limit=5)
+            # _search_with_rag retorna:
+            #   None  → RAG sem dados (nenhum produto indexado/erro) → tenta fallback REST
+            #   []    → RAG achou produtos mas todos out-of-stock → empty direto, sem REST
+            #   [...]  → produtos em estoque encontrados → sucesso
+            rag_results = _search_with_rag(tenant, query, limit=5)
             search_method = "rag"
-            
-            logger.info(f"[SEARCH] RAG returned {len(results) if results else 0} results for '{query}'")
-            
-            # Fallback to REST API if RAG didn't return results OR returned empty
-            if not results:
-                logger.info(f"[SEARCH] Falling back to REST API for '{query}'")
-                results = _search_with_rest_api(tenant, query, limit=5)
-                search_method = "rest_api"
-                logger.info(f"[SEARCH] REST API returned {len(results)} results")
-                
-                # Filter out-of-stock from REST API results too
-                if results:
-                    in_stock_results = [p for p in results if p.get("in_stock", True)]
-                    removed = len(results) - len(in_stock_results)
-                    if removed > 0:
-                        logger.info(f"[SEARCH] Filtered out {removed} out-of-stock products from REST API")
-                    results = in_stock_results
+
+            logger.info(f"[SEARCH] RAG returned {len(rag_results) if rag_results is not None else 'None'} results for '{query}'")
+
+            if rag_results is not None:
+                # RAG respondeu (mesmo que vazio por out-of-stock) — NÃO vai pro REST
+                results = rag_results
+                if not results:
+                    logger.info(
+                        f"[SEARCH] RAG sinalizou out-of-stock total para '{query}'. "
+                        f"Marcando como empty sem chamar REST API."
+                    )
+            else:
+                # RAG sem dados — tenta fallback REST API
+                logger.info(f"[SEARCH] Fallback REST API para '{query}' (RAG sem dados)")
+                try:
+                    results = _search_with_rest_api(tenant, query, limit=5)
+                    search_method = "rest_api"
+                    logger.info(f"[SEARCH] REST API returned {len(results)} results")
+
+                    # Filter out-of-stock from REST API results too
+                    if results:
+                        in_stock_results = [p for p in results if p.get("in_stock", True)]
+                        removed = len(results) - len(in_stock_results)
+                        if removed > 0:
+                            logger.info(f"[SEARCH] Filtered out {removed} out-of-stock products from REST API")
+                        results = in_stock_results
+                except Exception as rest_exc:
+                    # Falha no Shopify externo é operacional, não técnica — trata como empty
+                    logger.warning(
+                        f"[SEARCH] Fallback REST API falhou para '{query}': {rest_exc}. "
+                        f"Tratando como empty (erro operacional Shopify, não sistema interno)."
+                    )
+                    state.last_action = "search_products"
+                    state.last_action_status = "empty"
+                    state.last_action_success = False
+                    state.selected_products = []
+                    state.soft_context["search_results_count"] = 0
+                    state.soft_context["search_method"] = "rest_api_failed"
+                    state.next_step = "respond"
+                    return state
             
             state.selected_products = results
             state.soft_context["search_results_count"] = len(results)
@@ -197,15 +235,17 @@ def action_search_products(
             
             if not results:
                 state.last_action_success = False
+                state.last_action_status = "empty"
                 state.soft_context["search_error"] = "no_results"
-                state.bump_frustration()
             else:
                 state.last_action_success = True
+                state.last_action_status = "success"
                 if "search_error" in state.soft_context:
                     del state.soft_context["search_error"]
 
     except requests.Timeout:
         state.last_action_success = False
+        state.last_action_status = "system_error"
         state.system_error = "timeout"
         state.soft_context["search_error"] = "timeout"
         state.selected_products = []
@@ -213,6 +253,7 @@ def action_search_products(
 
     except requests.HTTPError as exc:
         state.last_action_success = False
+        state.last_action_status = "system_error"
         if exc.response.status_code == 429:
             state.system_error = "rate_limit"
             state.soft_context["search_error"] = "rate_limit"
@@ -224,6 +265,7 @@ def action_search_products(
 
     except Exception as exc:
         state.last_action_success = False
+        state.last_action_status = "system_error"
         state.system_error = str(exc)
         state.soft_context["search_error"] = str(exc)
         state.selected_products = []

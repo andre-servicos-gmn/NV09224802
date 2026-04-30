@@ -412,19 +412,44 @@ def _get_system_data_payload(
     """Build the 'System Data Payload' containing strict grounding facts."""
     lines = []
 
-    # 1. LAST ACTION STATUS (Critical for feedback)
-    if state.last_action:
-        status_icon = "✅" if state.last_action_success else "⚠️"
-        lines.append(f"LAST_ACTION: {state.last_action} ({status_icon} Success: {state.last_action_success})")
-        if not state.last_action_success:
-            lines.append("   → ERRO: A última ação falhou. Explique o problema e ofereça alternativa.")
-            # Add error details
+    # 1. LAST ACTION STATUS (semantic — informa o LLM sobre o resultado da última action)
+    status = getattr(state, "last_action_status", None)
+
+    if state.last_action and status:
+        if status == "success":
+            lines.append(f"LAST_ACTION: {state.last_action} (✅ encontrou resultado)")
+
+        elif status == "empty":
+            lines.append(f"LAST_ACTION: {state.last_action} (📭 sem resultado)")
+            lines.append(
+                "   INSTRUÇÃO: A busca rodou normalmente, mas não encontrou resultado para o que o cliente pediu. "
+                "Não diga 'deu erro' nem 'sistema falhou'. Em vez disso: informe educadamente que não temos esse item "
+                "específico no momento, e SE houver produtos similares no [CONTEXTO] abaixo, sugira-os como alternativa. "
+                "Se não houver alternativas, ofereça avisar quando chegar."
+            )
+
+        elif status == "system_error":
+            lines.append(f"LAST_ACTION: {state.last_action} (⚠️ erro técnico)")
+            lines.append(
+                "   INSTRUÇÃO: Houve um problema técnico real. Peça desculpas brevemente e sugira tentar de novo "
+                "daqui a pouco. Se for o segundo erro consecutivo na sessão, ofereça transferir pra um atendente humano."
+            )
             if state.system_error:
-                lines.append(f"   → SYSTEM ERROR: {state.system_error}")
-            # Check soft_context for specific errors
-            for k, v in state.soft_context.items():
-                if "error" in k:
-                    lines.append(f"   → DEBUG INFO: {k}={v}")
+                lines.append(f"   DETALHE TÉCNICO (não compartilhar com cliente): {state.system_error}")
+
+        elif status == "skipped":
+            pass  # action não rodou — não informa o LLM
+
+        else:
+            # status desconhecido — fallback ao comportamento legado
+            if state.last_action_success is False:
+                lines.append(f"LAST_ACTION: {state.last_action} (⚠️ falhou)")
+                lines.append("   INSTRUÇÃO: A última ação não foi bem sucedida. Tente abordagem alternativa.")
+
+    elif state.last_action and status is None and state.last_action_success is False:
+        # nodes antigos que ainda não setam last_action_status
+        lines.append(f"LAST_ACTION: {state.last_action} (⚠️ falhou)")
+        lines.append("   INSTRUÇÃO: A última ação não foi bem sucedida. Tente abordagem alternativa.")
 
     # 2. CRITICAL LINKS & IDs
     if state.checkout_link:

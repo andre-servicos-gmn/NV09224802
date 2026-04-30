@@ -85,15 +85,11 @@ Em vez de buscar palavras-chave, analise o MOMENTO e o OBJETIVO da jornada do us
 ## INTENTS (Referência Técnica)
 
 ### SALES GRUPO (Priorize se cliente já está discutindo produto)
-- **purchase_intent**: SINAL DE COMPRA! Exemplos: "quero comprar", "bora fechar", "vou levar", "quero esse", "quero garantir", "pode mandar o link", "me manda", "sim, quero", "fecha", "bora", "aceito", "tô dentro", "manda o pix"
-  → Se cliente CONFIRMOU interesse ("quero", "sim", "bora") após ver produto = purchase_intent
+- **purchase_intent**: Cliente expressa interesse de compra ("quero comprar", "quanto custa", "como compro")
 - **product_link**: URL de produto
 - **search_product**: Busca de itens, catálogo, perguntas sobre "o que vocês têm", "quais produtos", "me mostra", "quero ver produtos" ou especificidades de um produto (cor, material, tamanho). Também: "produtos da loja", "o que vendem", "catálogo"
 - **select_product**: Escolha entre opções ("o primeiro", "esse")
 - **select_variant**: Escolha de variação ("azul", "tamanho M")
-- **add_to_cart**: Adicionar ao carrinho
-- **cart_retry**: Pedir link novamente
-- **checkout_error**: Erro no pagamento
 - **greeting**: Oi, Olá (Início de conversa = Venda)
 - **general**: Conversa fiada (Manter engajamento = Venda)
 
@@ -356,51 +352,6 @@ def classify_heuristic(message: str, context: dict | None = None) -> RouterResul
             ambiguous=False,
             entities={"product_url": url_match.group(0)},
             rationale="Product URL detected",
-        )
-    
-    # ==========================================================================
-    # CRITICAL: Simple confirmation with product context → purchase_intent
-    # When user says "sim", "quero", "bora", etc. AND there are selected products,
-    # this is a PURCHASE CONFIRMATION. Skip LLM and route directly to generate link.
-    # ==========================================================================
-    confirmation_patterns = [
-        r'^(sim|quero|esse|pode|ok|beleza|bora|yes|manda|claro|aceito|isso|fechou?|vou levar|quero esse|pode ser|manda o link|gera o link|me manda|por favor|pfv|pf)\W*$',
-        r'^(sim|quero),?\s*(por favor|pfv|pode)?\W*$',
-        r'^gera\s*(o link|pra mim)?\W*$',
-        r'^manda\s*(o link|pra mim|ai)?\W*$',
-    ]
-    
-    has_products = context and context.get("has_selected_products")
-    
-    for pattern in confirmation_patterns:
-        if re.match(pattern, msg_lower, re.IGNORECASE):
-            if has_products:
-                return RouterResult(
-                    domain="sales",
-                    intent="purchase_intent",
-                    confidence=0.98,
-                    ambiguous=False,
-                    rationale="Simple confirmation with product context → purchase",
-                )
-    
-    # ==========================================================================
-    # Link request with product name ("gere o link do silver threader")
-    # When products are already selected and user requests a link for a specific
-    # product, classify as purchase_intent to avoid LLM misclassifying as search.
-    # ==========================================================================
-    link_request_patterns = [
-        r'(?:ger[ea]|manda|quero|envia)\s+(?:o\s+)?link',   # "gere o link", "manda o link"
-        r'link\s+(?:do|da|de|para)\s+',                      # "link do...", "link da..."  
-        r'quero\s+(?:o\s+)?(?:do|da|de)\s+',                 # "quero o do..."
-        r'(?:ger[ea]|manda)\s+(?:do|da|de)\s+',              # "gere do silver threader"
-    ]
-    if has_products and any(re.search(p, msg_lower) for p in link_request_patterns):
-        return RouterResult(
-            domain="sales",
-            intent="purchase_intent",
-            confidence=0.95,
-            ambiguous=False,
-            rationale="Link request with product context → purchase_intent",
         )
     
     # No obvious pattern, use LLM
