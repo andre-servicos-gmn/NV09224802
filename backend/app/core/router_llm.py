@@ -85,7 +85,6 @@ Em vez de buscar palavras-chave, analise o MOMENTO e o OBJETIVO da jornada do us
 ## INTENTS (Referência Técnica)
 
 ### SALES GRUPO (Priorize se cliente já está discutindo produto)
-- **purchase_intent**: Cliente expressa interesse de compra ("quero comprar", "quanto custa", "como compro")
 - **product_link**: URL de produto
 - **search_product**: Busca de itens, catálogo, perguntas sobre "o que vocês têm", "quais produtos", "me mostra", "quero ver produtos" ou especificidades de um produto (cor, material, tamanho). Também: "produtos da loja", "o que vendem", "catálogo"
 - **select_product**: Escolha entre opções ("o primeiro", "esse")
@@ -178,33 +177,53 @@ def _build_conversation_context(context: dict | None) -> str:
     return "\n".join(lines) if lines else "Nenhum contexto relevante."
 
 
+def _build_recent_history(context: dict | None) -> str:
+    """Extract and format last 4 conversation turns from context."""
+    if not context:
+        return ""
+    history = context.get("conversation_history") or []
+    if not history:
+        return ""
+    last_turns = history[-4:]
+    lines = []
+    for turn in last_turns:
+        role = turn.get("role", "?")
+        msg = (turn.get("message") or turn.get("content") or "")[:200]
+        if msg:
+            lines.append(f"{role}: {msg}")
+    if not lines:
+        return ""
+    return "Contexto recente da conversa:\n" + "\n".join(lines) + "\n\n"
+
+
 def _build_user_prompt(message: str, intents: list[str], context: dict | None) -> str:
     """Build the user prompt with message and context."""
     intent_lines = _build_intent_reference(intents)
     context_block = _build_conversation_context(context)
-    
+    history_prefix = _build_recent_history(context)
+
     # Check for obvious patterns to help the LLM
     hints = []
-    
+
     # URL detection
     if re.search(r'https?://\S+', message):
         hints.append("⚠️ Mensagem contém URL")
-    
+
     # Number-only detection
     if re.match(r'^\d{3,8}$', message.strip()):
         hints.append("⚠️ Mensagem é apenas um número (provável order_id)")
-    
+
     # Order keywords
     if any(w in message.lower() for w in ['pedido', 'rastreio', 'entrega', 'não chegou', 'atrasado']):
         hints.append("⚠️ Menciona termos de pedido/entrega")
-    
+
     # Confirmation keywords
     if re.match(r'^(sim|quero|esse|pode|ok|beleza|bora|yes|manda|claro|aceito)\W*$', message.lower().strip()):
         hints.append("⚠️ Parece ser confirmação simples")
-    
+
     hints_block = "\n".join(hints) if hints else ""
-    
-    prompt = f"""## MENSAGEM DO USUÁRIO
+
+    prompt = f"""{history_prefix}## MENSAGEM DO USUÁRIO
 "{message}"
 
 ## CONTEXTO DA CONVERSA
@@ -213,17 +232,17 @@ def _build_user_prompt(message: str, intents: list[str], context: dict | None) -
 ## INTENTS SUPORTADOS
 {intent_lines}
 """
-    
+
     if hints_block:
         prompt += f"""
 ## OBSERVAÇÕES AUTOMÁTICAS
 {hints_block}
 """
-    
+
     prompt += """
 ---
 Retorne APENAS o JSON de classificação."""
-    
+
     return prompt
 
 

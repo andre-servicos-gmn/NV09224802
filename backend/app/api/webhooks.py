@@ -292,7 +292,16 @@ async def process_consolidated_message(
         state.last_action_status = None
         state.last_action_success = None
         state.system_error = None
-        state.last_strategy = None
+
+        # Campos de produto em foco: reset a cada turno para evitar que
+        # available_variants e focused_product_id de um produto anterior
+        # contaminem o roteamento do turno corrente.
+        # selected_products NÃO é resetado aqui — o decide reseta via
+        # action_search_products quando o cliente troca de assunto.
+        state.available_variants = []
+        for key in ("selected_variant_id", "focused_product_id"):
+            if key in state.soft_context:
+                del state.soft_context[key]
 
         # Adjustment 5: Contextual Confirmation Detection
         # If message is simple confirmation AND bot just made an offer
@@ -329,6 +338,7 @@ async def process_consolidated_message(
             "selected_products_count": len(state.selected_products) if state.selected_products else 0,
             "store_name": tenant.name,
             "store_niche": tenant.store_niche or "loja online",
+            "conversation_history": state.conversation_history,
         }
         
         # Add product titles to context for better routing

@@ -58,8 +58,6 @@ class ConversationState(BaseModel):
     # --- FLUXO DO GRAFO (Graph Flow) ---
     next_step: Optional[str] = None         # Para decidir qual nó executar
     last_action: Optional[str] = None       # Último nó/ação executada
-    last_strategy: Optional[str] = None
-    
     last_action_success: Optional[bool] = None  # DEPRECATED: use last_action_status. Mantido pra compatibilidade.
     last_action_status: Optional[str] = None    # "success" | "empty" | "system_error" | "skipped" | None
 

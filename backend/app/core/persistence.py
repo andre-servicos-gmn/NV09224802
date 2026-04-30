@@ -61,7 +61,6 @@ def persist_agent_message(
             domain=state.domain,
             metadata={
                 "last_action": state.last_action,
-                "last_strategy": state.last_strategy,
                 "frustration_level": state.frustration_level,
             },
         )
@@ -89,7 +88,6 @@ def persist_conversation_state(
             "customer_email": state.customer_email,
             "frustration_level": state.frustration_level,
             "last_action": state.last_action,
-            "last_strategy": state.last_strategy,
             "last_action_success": state.last_action_success,
         }
         update_conversation_state(conversation_id, state_dict)

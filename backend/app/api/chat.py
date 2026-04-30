@@ -240,7 +240,6 @@ async def chat_endpoint(request: ChatRequest):
                 domain=state.domain,
                 metadata={
                     "action": state.last_action,
-                    "strategy": state.last_strategy,
                 }
             )
     except Exception as e:

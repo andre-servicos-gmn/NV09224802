@@ -30,17 +30,12 @@ def action_resolve(state: ConversationState) -> ConversationState:
             # Reset state dict (logic reused from handoff.py)
             reset_state = {
                 "intent": "general",
-                "cart_items": [],
                 "selected_products": [],
-                "checkout_link": None,
                 "soft_context": {},
                 "blocking_info": [],
                 "rag_context": None,
                 "order_id": None,
-                # "ticket_opened": False, # Was not in new state explicit fields, maybe soft_context
-                # "needs_resolution": False, # Removed
                 "last_action": None,
-                "last_strategy": None,
                 "frustration_level": 0,
                 "needs_handoff": False,
                 "handoff_reason": None,

@@ -106,36 +106,6 @@ class ShopifyClient:
             "vendor": product.get("vendor") or "",
         }
     
-    def build_checkout_link(
-        self,
-        variant_id: str,
-        quantity: int,
-        strategy: str
-    ) -> str:
-        """
-        Gera link de checkout conforme estratégia.
-        
-        Args:
-            variant_id: ID da variante do produto
-            quantity: Quantidade
-            strategy: Estratégia de link (permalink, add_to_cart, checkout_direct, human_handoff)
-            
-        Returns:
-            URL de checkout ou string vazia para human_handoff
-        """
-        if strategy == "permalink":
-            return f"https://{self.store_domain}/cart/{variant_id}:{quantity}"
-        elif strategy == "add_to_cart":
-            return (
-                f"https://{self.store_domain}/cart/add?id={variant_id}&quantity={quantity}"
-                "&return_to=%2Fcheckout"
-            )
-        elif strategy == "checkout_direct":
-            return f"https://{self.store_domain}/checkout?variant={variant_id}&quantity={quantity}"
-        elif strategy == "human_handoff":
-            return ""
-        return ""
-
     def search_products(self, query: str, limit: int = 5) -> list[dict]:
         """
         Busca produtos publicados usando a Shopify Admin API.

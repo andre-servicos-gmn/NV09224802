@@ -1,6 +1,6 @@
-"""Store Q&A decision node - with memory-based strategies.
+"""Store Q&A decision node.
 
-Strategies:
+Routes:
     - handoff: if needs_handoff is true
     - resolve: if needs_resolution is true
     - ask_one_missing: if missing_info_needed has items and repeat_count < 2
@@ -102,23 +102,21 @@ def store_qa_decide(state: ConversationState, tenant: TenantConfig) -> Conversat
 
     # B) Ask one missing info (max 2 times)
     if state.missing_info_needed and state.repeat_count < 2:
-        state.last_strategy = "ask_one_missing"
         state.next_step = "store_qa_respond"
         if os.getenv("DEBUG"):
             print(
                 f"[store_qa_decide] ASK_ONE_MISSING intent={state.intent} "
                 f"missing={state.missing_info_needed} repeat={state.repeat_count} "
-                f"strategy={state.last_strategy} next={state.next_step}"
+                f"next={state.next_step}"
             )
         return state
 
     # C) Default: answer via RAG
-    state.last_strategy = "rag_answer"
     state.next_step = "store_qa_respond"
     if os.getenv("DEBUG"):
         print(
             f"[store_qa_decide] RAG_ANSWER intent={state.intent} "
             f"missing={state.missing_info_needed} repeat={state.repeat_count} "
-            f"strategy={state.last_strategy} next={state.next_step}"
+            f"next={state.next_step}"
         )
     return state

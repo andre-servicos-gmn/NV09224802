@@ -44,8 +44,6 @@ def action_get_order(state: ConversationState, tenant: TenantConfig) -> Conversa
 
     try:
         # Limpar contexto de outros dominios
-        if "checkout_link" in state.soft_context:
-            del state.soft_context["checkout_link"]
         if "search_query" in state.soft_context:
             del state.soft_context["search_query"]
         state.selected_products = []

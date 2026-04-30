@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.core.constants import (
-    INTENT_CART_RETRY,
+    INTENT_SEARCH_PRODUCT,
     INTENT_ORDER_COMPLAINT,
     INTENT_PRODUCT_LINK,
     INTENT_PROVIDE_ORDER_ID,
@@ -46,25 +46,6 @@ def _run_script(state, tenant, path: Path):
             continue
         state = _run_message(state, tenant, line)
     return state
-
-
-def test_checkout_retry_dialog():
-    tenant = TenantRegistry().get("demo")
-    state = ConversationState(tenant_id=tenant.tenant_id, session_id="test-session")
-
-    state = _run_message(state, tenant, "oi")
-    state = _run_message(state, tenant, "vi esse produto https://example.com/products/colar")
-    assert state.soft_context.get("selected_variant_id") is not None
-
-    state = _run_message(state, tenant, "quero comprar")
-    assert state.last_strategy == "permalink"
-
-    state = _run_message(state, tenant, "deu erro no link")
-    state.last_action_success = False
-
-    state = _run_message(state, tenant, "gera de novo")
-    assert state.last_strategy == "add_to_cart"
-    assert state.last_bot_message.count("https://") == 1
 
 
 def test_store_qa_payment_dialog():
@@ -192,7 +173,7 @@ def test_order_tracking_stale_dialog(monkeypatch):
     state = _run_script(state, tenant, script_path)
     # The assert checks for the URL in the mock data
     assert state.tracking_url == "https://track.example.com/ABC"
-    assert state.ticket_opened is True
+    assert state.soft_context.get("ticket_opened") is True
 
 
 def _coerce_entity_value(value):
@@ -238,10 +219,10 @@ def test_router_ambiguous_llm_fallback(monkeypatch):
     def _fake_llm(_message, _context, _intents, timeout_s=None):
         return RouterResult(
             domain="sales",
-            intent=INTENT_CART_RETRY,
+            intent=INTENT_SEARCH_PRODUCT,
             confidence=0.7,
             ambiguous=False,
-            top_intents=[TopIntent(intent=INTENT_CART_RETRY, confidence=0.7)],
+            top_intents=[TopIntent(intent=INTENT_SEARCH_PRODUCT, confidence=0.7)],
             entities={"order_id": "1001"},
             rationale="test",
         )

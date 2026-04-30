@@ -138,15 +138,12 @@ async def close_conversation(request: CloseRequest):
         # Reset state dict
         reset_state = {
             "intent": "general",
-            "cart_items": [],
             "selected_products": [],
-            "checkout_link": None,
             "soft_context": {},
             "blocking_info": [],
             "rag_context": None,
             "order_id": None,
             "last_action": None,
-            "last_strategy": None,
             "frustration_level": 0,
             "needs_handoff": False,
             "handoff_reason": None,

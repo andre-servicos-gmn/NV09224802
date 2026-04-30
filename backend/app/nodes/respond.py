@@ -1,46 +1,22 @@
-# Modified: prefer LLM responses with minimal fallback handling.
+# Modified: removed checkout link injection — consultant+WISMO mode only.
 """
 Sales response generation using humanized LLM.
 """
+import logging
 import re
 
 from app.core.llm_humanized import generate_humanized_response, get_model_name
 from app.core.state import ConversationState
 from app.core.tenancy import TenantConfig
 
-
-def _ensure_link_once(message: str, link: str | None) -> str:
-    """Ensure checkout link appears exactly once in the message."""
-    if not link:
-        return message
-    if link not in message:
-        return f"{message}\n\n{link}".strip()
-    # Remove duplicate occurrences beyond the first
-    count = message.count(link)
-    if count <= 1:
-        return message
-
-    parts = message.split(link)
-    cleaned = parts[0] + link + "".join(parts[1:])
-    return cleaned.strip()
+logger = logging.getLogger(__name__)
 
 
-def _sanitize_fake_links(message: str, real_link: str | None) -> str:
-    """
-    Remove fake link placeholders AND hallucinated link sentences from LLM response.
-    
-    Catches both explicit placeholders ([LINK], (link aqui)) AND natural language
-    patterns where the LLM says "Aqui está o link" without an actual URL.
-    """
-    # If there's a real link with a valid URL, no sanitization needed
-    if real_link and real_link.startswith('http'):
-        return message
-    
-    # Check if message contains any real URL — if so, skip sanitization
+def _sanitize_fake_links(message: str) -> str:
+    """Remove fake link placeholders and hallucinated link sentences from LLM response."""
     if re.search(r'https?://\S+', message):
         return message
 
-    # Phase 1: Remove explicit placeholder patterns
     placeholder_patterns = [
         r'\[LINK\]',
         r'\(link aqui\)',
@@ -51,12 +27,10 @@ def _sanitize_fake_links(message: str, real_link: str | None) -> str:
         r'clique aqui:\s*$',
         r'link:?\s*$',
     ]
-    
+
     combined_placeholder = '|'.join(placeholder_patterns)
     cleaned = re.sub(combined_placeholder, '', message, flags=re.IGNORECASE | re.MULTILINE)
-    
-    # Phase 2: Remove hallucinated "link delivery" sentences
-    # These are lines where the LLM promises a link but there's no URL
+
     hallucinated_link_patterns = [
         r'^.*aqui\s+(está|tá|ta)\s+(o\s+)?link.*$',
         r'^.*segue\s+(o\s+)?link.*$',
@@ -68,26 +42,17 @@ def _sanitize_fake_links(message: str, real_link: str | None) -> str:
         r'^.*link\s+de\s+compra.*:?\s*$',
         r'^.*🔗.*$',
     ]
-    
+
     for pattern in hallucinated_link_patterns:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
-    
-    # Clean up extra whitespace/newlines
+
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     cleaned = cleaned.strip()
-    
-    # If the message was substantially about the link and got emptied, provide fallback
+
     if not cleaned or len(cleaned) < 10:
-        # Don't inject a CTA — let the LLM handle this naturally via the prompt.
-        # Return empty so the caller can use a generic fallback.
         cleaned = ""
-    
+
     return cleaned
-
-
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 def respond(state: ConversationState, tenant: TenantConfig) -> ConversationState:
@@ -96,16 +61,14 @@ def respond(state: ConversationState, tenant: TenantConfig) -> ConversationState
     logger.info("[RESPOND] ▶️ ENTRY")
     logger.info(f"[RESPOND] Intent: {state.intent}")
     logger.info(f"[RESPOND] Last Action: {state.last_action}")
-    logger.info(f"[RESPOND] checkout_link: {state.checkout_link}")
     logger.info(f"[RESPOND] selected_variant_id: {state.soft_context.get('selected_variant_id')}")
-    
+
     try:
         if state.intent == "media_unsupported":
             state.last_bot_message = "Ainda não consigo ouvir áudios ou ver imagens. Pode escrever pra mim?"
             state.soft_context["response_model"] = "deterministic"
             return state
 
-        # Generate humanized response
         response = generate_humanized_response(
             state=state,
             tenant=tenant,
@@ -114,16 +77,7 @@ def respond(state: ConversationState, tenant: TenantConfig) -> ConversationState
         )
         logger.info(f"[RESPOND] LLM Response (first 100 chars): {response[:100] if response else 'NONE'}...")
 
-        # Sanitize fake link placeholders BEFORE ensuring real link
-        link = state.checkout_link
-        logger.info(f"[RESPOND] Sanitizing with real_link={link}")
-        response = _sanitize_fake_links(response, link)
-        
-        # Only force-append checkout link for purchase-related intents
-        # For checkout_error, support, etc. — DON'T inject the link
-        NON_LINK_INTENTS = {"checkout_error", "greeting", "general", "order_status", "order_complaint"}
-        if state.intent not in NON_LINK_INTENTS:
-            response = _ensure_link_once(response, link)
+        response = _sanitize_fake_links(response)
         logger.info(f"[RESPOND] Final Response (first 150 chars): {response[:150] if response else 'NONE'}...")
 
         state.last_bot_message = response
