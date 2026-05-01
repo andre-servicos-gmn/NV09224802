@@ -38,7 +38,17 @@ def support_decide(state: ConversationState, tenant: TenantConfig) -> Conversati
     if state.intent in {INTENT_ORDER_STATUS, INTENT_ORDER_TRACKING, INTENT_ORDER_COMPLAINT}:
         if state.order_id or state.customer_email:
             if state.intent == INTENT_ORDER_COMPLAINT:
-                state.next_step = "action_open_ticket"
+                # Buscar pedido antes de abrir ticket, pra equipe humana ter dados.
+                has_order_data = bool(
+                    state.soft_context.get("shopify_order_id")
+                    or state.soft_context.get("order_status")
+                    or state.soft_context.get("order_number")
+                )
+                already_tried_lookup = state.last_action == "action_get_order"
+                if has_order_data or already_tried_lookup:
+                    state.next_step = "action_open_ticket"
+                else:
+                    state.next_step = "action_get_order"
             elif state.intent == INTENT_ORDER_TRACKING and state.tracking_url:
                 # If we ALREADY have tracking URL in state (e.g. from previous turn), just respond
                 state.next_step = "support_respond"
