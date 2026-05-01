@@ -439,16 +439,91 @@ def _get_system_data_payload(
 
     # 4. SUPPORT DATA
     if domain == "support":
+        has_order_data = state.order_id or state.soft_context.get("shopify_order_id")
+
+        if has_order_data:
+            lines.append("\n📦 DADOS DO PEDIDO ENCONTRADO:")
+
+            order_number = state.soft_context.get("order_number") or state.order_id
+            if order_number:
+                lines.append(f"- Número do pedido: #{order_number}")
+
+            order_status = state.soft_context.get("order_status")
+            if order_status:
+                lines.append(f"- Status do pagamento: {order_status}")
+
+            fulfillment_status = state.soft_context.get("fulfillment_status")
+            if fulfillment_status:
+                _status_labels = {
+                    "fulfilled": "Enviado (com transportadora)",
+                    "unfulfilled": "Aguardando envio",
+                    "partial": "Parcialmente enviado",
+                    "delivered": "Entregue (segundo transportadora)",
+                }
+                label = _status_labels.get(fulfillment_status, fulfillment_status)
+                lines.append(f"- Status de envio: {label}")
+
+            order_created_at = state.soft_context.get("order_created_at")
+            if order_created_at:
+                lines.append(f"- Data do pedido: {order_created_at}")
+
+            if state.tracking_url:
+                lines.append(f"- 🚚 Link de rastreio: {state.tracking_url}")
+                days_since = state.tracking_last_update_days
+                if days_since is not None:
+                    if days_since >= 7:
+                        lines.append(
+                            f"- ⚠️ ATENÇÃO: tracking não atualiza há {days_since} dias. "
+                            "Reconheça o atraso E ofereça abrir um chamado se cliente quiser."
+                        )
+                    elif days_since >= 4:
+                        lines.append(
+                            f"- ⚠️ Tracking não atualiza há {days_since} dias. "
+                            "Demonstre empatia, mas evite alarmar — pode ser normal dependendo da transportadora."
+                        )
+                    else:
+                        lines.append(f"- Tracking atualizado há {days_since} dia(s)")
+            elif fulfillment_status == "unfulfilled":
+                lines.append(
+                    "- Sem código de rastreio ainda (pedido pago mas não despachado)"
+                )
+            else:
+                lines.append("- Sem link de rastreio disponível")
+
+            order_items = state.soft_context.get("order_items") or []
+            if order_items:
+                items_str = ", ".join(
+                    str(item.get("title", item.get("name", "item")))[:50]
+                    for item in order_items[:3]
+                )
+                lines.append(f"- Itens: {items_str}")
+
+            lines.append("")
+            lines.append("⚠️ REGRAS PARA RESPONDER SOBRE ESTE PEDIDO:")
+            lines.append("- NUNCA invente prazo de entrega. Você NÃO sabe quando vai chegar.")
+            lines.append("- Se cliente perguntar 'quando chega?', oriente a clicar no link de rastreio.")
+            lines.append("- Se NÃO há link de rastreio, diga que ainda não foi despachado e que o link aparece quando a transportadora coletar.")
+            lines.append("- Se status for 'delivered' mas cliente diz que não recebeu, NÃO tente resolver — encaminhe para humano.")
+            lines.append("- Se rastreio não atualiza há muitos dias, reconheça e ofereça abrir um chamado.")
+            lines.append("- NUNCA invente nome de transportadora se não estiver nos dados.")
+
+        elif state.last_action == "action_get_order" and state.last_action_status == "empty":
+            lines.append("\n📭 PEDIDO NÃO ENCONTRADO:")
+            lines.append("- A busca pelo número/email do cliente não retornou resultado.")
+            lines.append("")
+            lines.append("⚠️ REGRAS:")
+            lines.append("- Peça gentilmente para o cliente confirmar o número do pedido OU o email usado na compra.")
+            lines.append("- NÃO invente que o pedido existe.")
+            lines.append("- Se for a 2ª vez pedindo o mesmo dado, ofereça encaminhar para um atendente humano.")
+
         if state.customer_email:
-            lines.append(f"📧 EMAIL: {state.customer_email}")
-        
-        # Ticket/Refund context
-        if state.soft_context.get("ticket_id"):
-            lines.append(f"🎫 TICKET CRIADO: #{state.soft_context['ticket_id']}")
-        
-        status = state.soft_context.get("order_status")
-        if status:
-            lines.append(f"📊 STATUS PEDIDO: {status}")
+            lines.append(f"- Email cadastrado: {state.customer_email}")
+
+        ticket_id = state.soft_context.get("ticket_id") or (
+            state.soft_context.get("ticket_opened") and "aberto"
+        )
+        if ticket_id:
+            lines.append(f"- Ticket aberto: {ticket_id}")
 
     # 5. KNOWLEDGE BASE (RAG)
     if knowledge_context and "Nenhuma informação" not in knowledge_context:
