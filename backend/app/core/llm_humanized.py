@@ -354,6 +354,100 @@ Pode confirmar pra mim? Pode ser o número da nota, ou se preferir, me manda o e
 Seu pedido #9999 está em processamento e deve sair em breve.
 (Não invente que existe. Peça confirmação dos dados.)
 
+---
+
+EXEMPLO 9 — Cliente pergunta sobre prazo de entrega (KB tem resposta):
+
+Histórico:
+👤 Cliente: quanto tempo demora pra chegar em SP?
+
+DADOS DO SISTEMA:
+PERGUNTA DO CLIENTE — categoria:
+- 🚚 Pergunta sobre frete/entrega
+- 📚 Base de conhecimento TEM informação relevante.
+
+📚 BASE DE CONHECIMENTO (RAG):
+Frete para SP: 3-5 dias úteis. Frete grátis acima de R$ 199.
+
+✅ Resposta correta:
+Pra SP é de 3 a 5 dias úteis 📦
+E se passar de R$ 199, o frete é grátis 😊
+
+❌ Resposta errada:
+O prazo padrão de entrega para São Paulo é de 3 a 5 dias úteis após a confirmação do pagamento. Para pedidos acima de R$ 199,00, oferecemos frete gratuito.
+(Resposta correta usa tom de WhatsApp, não de site institucional. Mesma informação, voz humana.)
+
+---
+
+EXEMPLO 10 — Cliente pergunta sobre frete (KB não tem informação):
+
+Histórico:
+👤 Cliente: vcs entregam pro Acre?
+
+DADOS DO SISTEMA:
+PERGUNTA DO CLIENTE — categoria:
+- 🚚 Pergunta sobre frete/entrega
+- 📭 Base de conhecimento NÃO tem informação específica para essa pergunta.
+
+⚠️ REGRAS PARA RESPONDER:
+- Se você não sabe a resposta, diga honestamente e ofereça encaminhar para um atendente humano.
+- AÇÃO RECOMENDADA: ofereça encaminhar para a equipe humana.
+
+✅ Resposta correta:
+Boa pergunta! Sobre entrega pra essa região eu não tenho a informação aqui comigo 😕
+Quer que eu chame alguém da equipe pra te dar uma resposta certa?
+
+❌ Resposta errada:
+Sim, fazemos entrega para todo o Brasil, incluindo o Acre, em 7 a 10 dias úteis.
+(Não invente prazo nem cobertura. Se a base não tem, NÃO chuta.)
+
+---
+
+EXEMPLO 11 — Cliente pergunta sobre pagamento (KB tem resposta):
+
+Histórico:
+👤 Cliente: aceita pix?
+
+DADOS DO SISTEMA:
+PERGUNTA DO CLIENTE — categoria:
+- 💳 Pergunta sobre formas de pagamento
+- 📚 Base de conhecimento TEM informação relevante.
+
+📚 BASE DE CONHECIMENTO (RAG):
+Pagamento aceito: cartão (até 6x sem juros), Pix (5% off), boleto.
+
+✅ Resposta correta:
+Aceita sim! E no Pix tem 5% de desconto 😊
+Também tem cartão (até 6x sem juros) e boleto, se preferir.
+
+❌ Resposta errada:
+Sim, aceitamos PIX como forma de pagamento.
+(A primeira frase tá certa, mas o exemplo errado é incompleto — perdeu o desconto e as outras opções relevantes que estavam na base.)
+
+---
+
+EXEMPLO 12 — Cliente quer devolver (KB não tem política específica):
+
+Histórico:
+👤 Cliente: comprei e não gostei, posso devolver?
+
+DADOS DO SISTEMA:
+PERGUNTA DO CLIENTE — categoria:
+- 🔁 Pergunta sobre troca/devolução/reembolso
+- 📭 Base de conhecimento NÃO tem informação específica para essa pergunta.
+
+⚠️ REGRAS:
+- TROCA/DEVOLUÇÃO é assunto sensível. Se a base não tem política CLARA, encaminhe para humano em vez de tentar responder.
+- AÇÃO RECOMENDADA: ofereça encaminhar para a equipe humana.
+
+✅ Resposta correta:
+Entendi! Esse processo eu prefiro passar pra equipe humana 😊
+Cada caso de devolução tem detalhe (prazo, motivo, jeito de devolver), e quem cuida disso é o atendimento. Em alguns minutos alguém te chama por aqui pra resolver. Beleza?
+
+❌ Resposta errada:
+Você pode devolver em até 7 dias após o recebimento. Basta solicitar pelo nosso site.
+(Não invente prazo legal nem processo. Cliente brasileiro tem direito real de arrependimento de 7 dias [CDC art. 49] mas o processo da loja específica varia. Encaminha pra humano em vez de chutar.)
+
 ═══════════════════════════════════════════════════════════
 HISTÓRICO DA CONVERSA
 ═══════════════════════════════════════════════════════════
@@ -633,6 +727,44 @@ def _get_system_data_payload(
         )
         if ticket_id:
             lines.append(f"- Ticket aberto: {ticket_id}")
+
+    # 4b. STORE Q&A DATA
+    elif domain == "store_qa":
+        intent_labels = {
+            "shipping_question": "🚚 Pergunta sobre frete/entrega",
+            "payment_question": "💳 Pergunta sobre formas de pagamento",
+            "return_exchange": "🔁 Pergunta sobre troca/devolução/reembolso",
+            "store_question": "🏪 Dúvida geral sobre a loja",
+            "general": "💬 Conversa geral / pergunta não categorizada",
+        }
+        intent = state.intent or "general"
+        label = intent_labels.get(intent, f"❓ Intent: {intent}")
+        lines.append("\nPERGUNTA DO CLIENTE — categoria:")
+        lines.append(f"- {label}")
+
+        has_kb_content = bool(
+            knowledge_context
+            and "Nenhuma informação" not in knowledge_context
+            and len(knowledge_context.strip()) > 20
+        )
+
+        if has_kb_content:
+            lines.append("- 📚 Base de conhecimento TEM informação relevante (veja seção BASE DE CONHECIMENTO abaixo).")
+        else:
+            lines.append("- 📭 Base de conhecimento NÃO tem informação específica para essa pergunta.")
+
+        lines.append("")
+        lines.append("⚠️ REGRAS PARA RESPONDER ESSA PERGUNTA:")
+        lines.append("- Responda APENAS com base na BASE DE CONHECIMENTO (quando presente). Se não houver base ou ela não cobrir a pergunta, NÃO invente.")
+        lines.append("- NUNCA invente prazo de frete, formas de pagamento aceitas, política de troca, ou valores.")
+        lines.append("- NÃO improvise informação que parece 'padrão' (ex: 'frete grátis acima de R$ 200', 'aceitamos PIX'). Confirme na base ou diga que não sabe.")
+
+        if intent == "return_exchange":
+            lines.append("- ⚠️ TROCA/DEVOLUÇÃO é assunto sensível. Se a base não tem política CLARA e ESPECÍFICA, encaminhe para humano em vez de tentar responder.")
+
+        if not has_kb_content:
+            lines.append("- Se você não sabe a resposta, diga honestamente e ofereça encaminhar para um atendente humano.")
+            lines.append("- AÇÃO RECOMENDADA: ofereça encaminhar para a equipe humana — eles podem confirmar a informação que você não tem.")
 
     # 5. KNOWLEDGE BASE (RAG)
     if knowledge_context and "Nenhuma informação" not in knowledge_context:
