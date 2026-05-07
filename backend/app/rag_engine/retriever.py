@@ -32,48 +32,69 @@ class VectorRetriever:
         query: str,
         limit: int = 10,
         only_in_stock: bool = False,
+        similarity_threshold: float = 0.4,
     ) -> list[dict]:
         """Search products by semantic similarity.
-        
+
         Args:
             tenant_id: UUID of the tenant.
             query: User's search query.
             limit: Maximum number of results to return.
             only_in_stock: If True, only return products that are in stock.
-            
+            similarity_threshold: Minimum cosine similarity to keep a product.
+                Below this threshold, products are filtered out as "not relevant enough".
+                Default 0.4 (empirical for text-embedding-3-small).
+
         Returns:
             List of product dicts with similarity scores.
         """
         import logging
         logger = logging.getLogger(__name__)
-        
+
         logger.info(f"[RETRIEVER] search_products called: tenant={tenant_id}, query='{query}', limit={limit}")
-        
+
         if not query or not query.strip():
             logger.warning("[RETRIEVER] Empty query, returning []")
             return []
-        
-        # Generate query embedding
+
         logger.info(f"[RETRIEVER] Generating embedding for query: '{query}'")
         query_embedding = self.embedder.embed_text(query)
         logger.info(f"[RETRIEVER] Got embedding vector of length {len(query_embedding)}")
-        
-        # Call Supabase RPC function via REST
-        result = self._call_rpc(
+
+        # Pede até `limit + 5` da RPC pra ter folga depois do filtro
+        raw_results = self._call_rpc(
             "search_products_by_embedding",
             {
                 "query_embedding": query_embedding,
                 "tenant_uuid": tenant_id,
-                "match_count": limit,
+                "match_count": limit + 5,
                 "only_in_stock": only_in_stock,
             }
         )
-        
-        logger.info(f"[RETRIEVER] RPC returned {len(result)} products")
-        for i, p in enumerate(result[:3]):
-            logger.info(f"[RETRIEVER]   {i+1}. {p.get('title', 'N/A')} (similarity={p.get('similarity', 'N/A'):.4f})")
-        
-        return result
+
+        if not raw_results:
+            logger.info(f"[RETRIEVER] RPC returned 0 raw results for '{query}'")
+            return []
+
+        logger.info(f"[RETRIEVER] RPC returned {len(raw_results)} raw products (pre-threshold)")
+
+        above_threshold = [
+            p for p in raw_results
+            if p.get("similarity", 0.0) >= similarity_threshold
+        ]
+
+        filtered_count = len(raw_results) - len(above_threshold)
+        if filtered_count > 0:
+            logger.info(
+                f"[RETRIEVER] Filtered out {filtered_count} products below similarity threshold "
+                f"{similarity_threshold} for query '{query}'"
+            )
+            for p in raw_results[:5]:
+                sim = p.get("similarity", 0.0)
+                mark = "✓" if sim >= similarity_threshold else "✗"
+                logger.info(f"[RETRIEVER]   {mark} {sim:.3f} - {(p.get('title') or 'N/A')[:50]}")
+
+        return above_threshold[:limit]
     
     def _call_rpc(self, function_name: str, params: dict) -> list[dict]:
         """Call a Supabase RPC function.
