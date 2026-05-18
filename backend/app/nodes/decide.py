@@ -1,6 +1,8 @@
 # Modified: removed checkout/cart/link generation — consultant+WISMO mode only.
 import logging
 import re
+import unicodedata
+from collections import Counter
 from app.core.constants import (
     INTENT_GREETING,
     INTENT_PRODUCT_LINK,
@@ -14,37 +16,104 @@ from app.core.tenancy import TenantConfig
 logger = logging.getLogger(__name__)
 
 
-def _match_product_by_name(state: ConversationState) -> dict | None:
-    """Try to match the user's message against existing selected_products by title."""
-    if not state.selected_products or not state.last_user_message:
-        return None
+# Stopwords gramaticais PT-BR universais (linguagem, não dados de tenant)
+_PT_STOPWORDS = frozenset({
+    "de", "da", "do", "das", "dos", "com", "para", "pra", "e", "em",
+    "no", "na", "nos", "nas", "o", "a", "os", "as", "um", "uma", "uns",
+    "umas", "ao", "aos", "à", "às", "por", "que", "se", "ou", "mas",
+})
 
-    msg = state.last_user_message.lower().strip()
+def _normalize(text: str) -> str:
+    """Lowercase + remove acentos."""
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFD", text.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+def _tokenize(text: str) -> list[str]:
+    """Tokens normalizados, sem stopwords PT-BR, sem 1-2 chars, sem dígitos puros."""
+    norm = _normalize(text)
+    raw = norm.replace("-", " ").replace("/", " ").replace(",", " ").split()
+    return [
+        t for t in raw
+        if len(t) >= 3 and t not in _PT_STOPWORDS and not t.isdigit()
+    ]
+
+def _build_dynamic_stopwords(products: list[dict]) -> frozenset[str]:
+    """
+    Stopwords dinâmicas por vitrine (TF-IDF leve).
+
+    Token que aparece em > 50% dos títulos da vitrine ativa é considerado
+    ruidoso (provavelmente marca/vendor/categoria genérica do tenant) e
+    descartado do matching. Funciona pra qualquer tenant sem hardcode.
+
+    Só ativa com 4+ produtos (abaixo disso, "frequência alta" não é sinal
+    confiável de ruído).
+    """
+    if not products or len(products) < 4:
+        return frozenset()
+
+    token_doc_freq: Counter[str] = Counter()
+    for p in products:
+        title = p.get("title") or ""
+        unique_tokens = set(_tokenize(title))
+        for t in unique_tokens:
+            token_doc_freq[t] += 1
+
+    threshold = len(products) * 0.5
+    return frozenset(t for t, count in token_doc_freq.items() if count > threshold)
+
+
+def _match_product_by_name(state: ConversationState) -> tuple[dict | None, float]:
+    """
+    Match user message against selected_products by title.
+    Returns (best_product, best_score). Score in [0.0, 1.0].
+
+    Usa stopwords dinâmicas derivadas da vitrine ativa pra remover ruído de
+    marca/vendor/categoria sem hardcode. Sistema multitenant-safe.
+    """
+    if not state.selected_products or not state.last_user_message:
+        return None, 0.0
+
+    dynamic_stops = _build_dynamic_stopwords(state.selected_products)
+
+    def significant(text: str) -> set[str]:
+        return {t for t in _tokenize(text) if t not in dynamic_stops}
+
+    msg_tokens = significant(state.last_user_message)
+    if not msg_tokens:
+        return None, 0.0
+
+    msg_norm = _normalize(state.last_user_message)
 
     best_match = None
-    best_score = 0
+    best_score = 0.0
 
     for product in state.selected_products:
-        title = (product.get("title") or "").lower()
-        if not title:
+        title = product.get("title") or ""
+        title_set = significant(title)
+        if not title_set:
             continue
 
-        if title in msg:
-            score = len(title)
-            if score > best_score:
-                best_match = product
-                best_score = score
+        matched = msg_tokens & title_set
+
+        # Exige no mínimo 2 tokens significativos OU 1 token longo (≥6 chars)
+        if len(matched) < 2 and not any(len(t) >= 6 for t in matched):
             continue
 
-        title_words = title.split()
-        matched_words = sum(1 for w in title_words if w in msg)
-        if matched_words > 0:
-            score = matched_words / len(title_words)
-            if score >= 0.5 and score > best_score:
-                best_match = product
-                best_score = score
+        score = len(matched) / len(title_set)
 
-    return best_match
+        # Bonus: substring exata de token longo (apelido tipo "mopinho", "strong")
+        for t in title_set:
+            if len(t) >= 5 and t in msg_norm:
+                score += 0.15
+                break
+
+        if score > best_score:
+            best_match = product
+            best_score = min(score, 1.0)
+
+    return best_match, best_score
 
 
 SALES_DECIDE_PROMPT = """Você é o Cérebro de Vendas do Nouvaris AI.
@@ -136,33 +205,58 @@ def _decide_with_heuristics(state: ConversationState) -> str:
     if state.frustration_level >= 3:
         return "handoff"
 
-    # ======================================================================
-    # PRIORITY 2: USER NAMES A PRODUCT → MATCH & SET FOCUS
-    # ======================================================================
-    if (state.selected_products
-            and state.intent in [INTENT_PRODUCT_LINK, INTENT_SEARCH_PRODUCT]
-            and not selected_variant_id):
+    # PRIORITY 2: USER NAMES A PRODUCT FROM ACTIVE SHOWCASE → PROMOTE TO FOCUS
+    # Roda ANTES do roteamento por intent — caso contrário action_search_products
+    # zera selected_products e perde a vitrine antes do match acontecer.
+    if state.selected_products and not selected_variant_id:
+        msg_norm = _normalize(state.last_user_message or "")
+        msg_significant = _tokenize(state.last_user_message or "")
+        followup_markers = {"fala", "mais", "sobre", "esse", "este", "aquele",
+                            "qual", "quanto", "preco", "valor", "detalhe",
+                            "info", "informacao", "produto", "tem"}
+        is_followup = (
+            len(msg_significant) <= 8
+            or any(m in msg_norm for m in followup_markers)
+        )
 
-        matched = _match_product_by_name(state)
-        if matched:
-            variants = matched.get("variants") or []
-            in_stock = matched.get("in_stock", True)
+        if is_followup:
+            matched, score = _match_product_by_name(state)
+            if matched and score >= 0.6:
+                variants = matched.get("variants") or []
+                in_stock = matched.get("in_stock", True)
 
-            if not in_stock:
-                logger.info(f"[DECIDE] Product '{matched.get('title')}' matched but OUT OF STOCK")
-            elif len(variants) > 1:
-                state.available_variants = [
-                    {
-                        "id": str(v.get("id")),
-                        "title": v.get("title", ""),
-                        "price": str(v.get("price", "")),
-                        "available": v.get("available", True),
-                    }
-                    for v in variants
-                ]
-                state.soft_context["focused_product_id"] = matched.get("product_id")
-                logger.info(f"[DECIDE] Matched '{matched.get('title')}' with {len(variants)} variants → action_select_variant")
-                return "action_select_variant"
+                if not in_stock:
+                    logger.info(
+                        f"[DECIDE] Match '{matched.get('title')}' OUT OF STOCK, "
+                        f"skipping promotion"
+                    )
+                elif len(variants) > 1:
+                    state.available_variants = [
+                        {"id": str(v.get("id")), "title": v.get("title", ""),
+                         "price": str(v.get("price", "")),
+                         "available": v.get("available", True)}
+                        for v in variants
+                    ]
+                    state.soft_context["focused_product_id"] = matched.get("product_id")
+                    state.soft_context["product_title"] = matched.get("title")
+                    state.soft_context["product_url"] = matched.get("url")
+                    state.soft_context["product_price"] = matched.get("price")
+                    logger.info(
+                        f"[DECIDE] Promoted '{matched.get('title')}' "
+                        f"(score={score:.2f}) → action_select_variant"
+                    )
+                    return "action_select_variant"
+                else:
+                    # BRANCH NOVO: produto sem variants → foco + respond direto
+                    state.soft_context["focused_product_id"] = matched.get("product_id")
+                    state.soft_context["product_title"] = matched.get("title")
+                    state.soft_context["product_url"] = matched.get("url")
+                    state.soft_context["product_price"] = matched.get("price")
+                    logger.info(
+                        f"[DECIDE] Promoted '{matched.get('title')}' "
+                        f"(score={score:.2f}) → respond (no variants)"
+                    )
+                    return "respond"
 
     # ======================================================================
     # PRIORITY 3: Available variants but none selected → ask user

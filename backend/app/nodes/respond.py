@@ -14,6 +14,30 @@ logger = logging.getLogger(__name__)
 
 def _sanitize_fake_links(message: str) -> str:
     """Remove fake link placeholders and hallucinated link sentences from LLM response."""
+    # Detect known-fake URL patterns BEFORE early-return on real URLs
+    fake_url_patterns = [
+        r'https?://linkdoproduto\.com\S*',
+        r'https?://loja\.com\S*',
+        r'https?://exemplo\.com\S*',
+        r'https?://example\.com\S*',
+        r'https?://placeholder\S*',
+        r'https?://produto\.com\S*',
+        r'https?://meusite\.com\S*',
+        r'https?://seusite\.com\S*',
+        r'https?://link\.com\S*',
+        r'https?://siteloja\.com\S*',
+    ]
+    for pattern in fake_url_patterns:
+        if re.search(pattern, message, flags=re.IGNORECASE):
+            message = re.sub(
+                r'\[([^\]]+)\]\(' + pattern + r'\)',
+                r'(link sob confirmação)',
+                message,
+                flags=re.IGNORECASE,
+            )
+            message = re.sub(pattern, '(link sob confirmação)', message, flags=re.IGNORECASE)
+
+    # Se ainda tem URL real, retornar (sanitização de URL fake já foi feita acima)
     if re.search(r'https?://\S+', message):
         return message
 

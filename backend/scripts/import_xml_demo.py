@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
-TENANT_DEMO_UUID = "c35fe360-dc69-4997-9d1f-ae57f4d8a135"
+TENANT_DEMO_UUID = "d8ef2997-c035-4af7-b995-93b0332786c4"
 PLATFORM_NAME = "google_shopping_xml"
 XML_URL = "https://www.lojadoprofissional.com.br/api/comparador/produtos-gratuitos"
 GOOGLE_NS = {"g": "http://base.google.com/ns/1.0"}
