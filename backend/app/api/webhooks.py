@@ -14,6 +14,7 @@ Security measures:
 """
 
 import logging
+import os
 import time
 import re
 import asyncio
@@ -28,13 +29,8 @@ from app.adapters.whatsapp_base import WhatsAppAdapterBase
 from app.core.tenancy import TenantRegistry
 from app.sync.sync_service import SyncService
 from app.core.message_buffer import message_buffer
-from app.core.session_store_v2 import get_session, save_session
-from app.core.database import get_or_create_conversation
-from app.core.state import ConversationState
-# Assumed location based on grep search
-from app.graphs.main_graph import run_main_graph
-from app.core.constants import FRUSTRATION_KEYWORDS
-from app.core.router import apply_entities_to_state, classify
+from app.core.turn_processor import process_message
+from app.graphs.graph import clear_session
 
 
 # Configure logging
@@ -221,15 +217,38 @@ def _split_message(text: str) -> list[str]:
 
 
 async def process_consolidated_message(
-    text: str, 
-    tenant_id: str, 
-    from_number: str, 
-    message_id: str,
-    session_id: str
+    text: str,
+    *,
+    tenant_id: str,
+    from_number: str,
+    session_id: str,
+    message_ids: list[str] | None = None,
+    generation: int | None = None,
 ):
-    """Process aggregated messages from the buffer."""
+    """Processa mensagens consolidadas do buffer WhatsApp.
+
+    Camada fina: toda orquestração de turno (tenant, conversation,
+    state, router, graph, persistência) mora em
+    turn_processor.process_message. Aqui só fica:
+    - Refetch de tenant para recriar o adapter de envio.
+    - Comando /reset (caso especial — antes do processamento de turno).
+    - Anti-eco + mark_as_read + split em chunks + send via adapter.
+
+    `generation` é a versão do lote no buffer. Se mensagem nova da mesma
+    sessão chegou durante o processamento (ex: durante a chamada de LLM),
+    a resposta está obsoleta e NÃO é enviada — o turno fica persistido no
+    checkpoint e o próximo lote responde com o contexto completo.
+    `generation=None` desativa a checagem (chamadas diretas/testes).
+    """
+    message_ids = message_ids or []
+
+    def _superseded() -> bool:
+        return generation is not None and not message_buffer.is_current(
+            session_id, generation
+        )
+
     try:
-        # Re-fetch tenant and recreate adapter
+        # Refetch tenant pra recriar adapter de envio.
         registry = TenantRegistry()
         tenant = registry.get(tenant_id, use_cache=True)
         adapter = _get_whatsapp_adapter(tenant)
@@ -240,171 +259,76 @@ async def process_consolidated_message(
 
         tenant_uuid = tenant.uuid or tenant.tenant_id
 
-        # Garante que a row em conversations existe antes de qualquer save_session.
-        # get_or_create_conversation é idempotente: SELECT primeiro, INSERT só se não existir.
-        conversation_data = await asyncio.to_thread(
-            get_or_create_conversation,
-            tenant_id=tenant_uuid,
-            session_id=session_id,
-            channel="whatsapp",
-            number=from_number,
-        )
-        if not conversation_data or not conversation_data.get("id"):
-            logger.error(
-                f"[process_consolidated_message] get_or_create_conversation falhou "
-                f"para session={session_id}. Abortando."
-            )
-            return
+        # Sinaliza "digitando..." imediatamente (best-effort, não-crítico).
+        try:
+            await adapter.send_typing(to=from_number)
+        except Exception as e:
+            logger.warning(f"send_typing falhou (não-crítico): {e}")
 
-        if conversation_data.get("status") in ("handoff", "human_active"):
-            logger.info(f"Conversation {session_id} em status {conversation_data['status']}. Agente silenciado.")
-            return
-
-        # Handle Reset Command
+        # /reset command — caso especial, antes do turn_processor.
         if text.strip().lower() in ["/reset", "/clear", "/reiniciar"]:
-            from app.core.session_store_v2 import clear_session
             clear_session(tenant_uuid, session_id)
             logger.info(f"🔄 Session reset requested for {session_id}")
             await adapter.send_text_message(
-                to=session_id,  # session_id is the phone number
-                text="🔄 Sessão reiniciada com sucesso. Pode começar de novo!"
+                to=from_number,
+                text="🔄 Sessão reiniciada com sucesso. Pode começar de novo!",
             )
             return
 
-        # Session management
-        state = get_session(tenant_uuid, session_id)
+        # Delega TODA a orquestração de turno ao turn_processor.
+        result = await asyncio.to_thread(
+            process_message,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            user_message=text,
+            channel="whatsapp",
+            is_playground=False,
+            number=from_number,
+        )
 
-        if state:
-            state.last_user_message = text
-            state.add_to_history("user", text)
-        else:
-            state = ConversationState(
-                tenant_id=tenant_uuid,
-                session_id=session_id,
-                channel="whatsapp",
-                last_user_message=text,
+        # Sem mensagem → silêncio (ex: status closed, human_active sem msg).
+        if not result.bot_message:
+            return
+
+        # Resposta obsoleta: chegou mensagem nova durante o processamento.
+        # O turno já está no checkpoint; o próximo lote responde tudo junto.
+        if _superseded():
+            logger.info(
+                f"[BUFFER] Resposta obsoleta descartada p/ sessão "
+                f"...{session_id[-4:]} (gen {generation})"
             )
-            state.add_to_history("user", text)
+            return
 
-        # Reset campos transitórios do turno passado — esses representam
-        # "resultado da última action" e não devem vazar para o turno atual.
-        state.last_action = None
-        state.last_action_status = None
-        state.last_action_success = None
-        state.system_error = None
+        # Anti-eco: registra o que vamos enviar.
+        _record_sent_message(result.bot_message)
 
-        # Campos de produto em foco: reset a cada turno para evitar que
-        # available_variants e focused_product_id de um produto anterior
-        # contaminem o roteamento do turno corrente.
-        # selected_products NÃO é resetado aqui — o decide reseta via
-        # action_search_products quando o cliente troca de assunto.
-        state.available_variants = []
-        for key in ("selected_variant_id", "focused_product_id"):
-            if key in state.soft_context:
-                del state.soft_context[key]
+        # Mark as read de todas as mensagens do lote, antes do envio.
+        for mid in message_ids:
+            await adapter.mark_as_read(mid)
 
-        # Adjustment 5: Contextual Confirmation Detection
-        # If message is simple confirmation AND bot just made an offer
-        confirmation_pattern = r'^(sim|quero|pode|ok|ta|tá|beleza|bora|yes|manda|claro|aceito)\W*$'
-        
-        if re.match(confirmation_pattern, text.lower().strip()):
-            # Check if bot asked something in previous turn
-            if state.last_bot_message and ('?' in state.last_bot_message or 
-                                           'quer' in state.last_bot_message.lower() or
-                                           'posso' in state.last_bot_message.lower()):
-                
-                logger.info(f"🎯 Detected user confirmation: '{text}' → marking as continuation")
-                
-                # Add flags for Router
-                state.soft_context['user_confirmed_previous_offer'] = True
-                state.soft_context['confirmation_text'] = text
-                state.soft_context['is_simple_confirmation'] = True
-                
-                # Maintain current domain/intent
-                if state.domain:
-                    state.soft_context['keep_current_domain'] = True
-                if state.intent and state.intent != 'general':
-                    state.soft_context['keep_current_intent'] = True
-        
-        # Prepare context for Router
-        context = {
-            "tenant_id": state.tenant_id,
-            "session_id": state.session_id,
-            "last_domain": state.domain,
-            "last_intent": state.intent,
-            "has_variant_id": bool(state.soft_context.get("selected_variant_id")),
-            "has_order_id": bool(state.order_id),
-            "has_selected_products": bool(state.selected_products),
-            "selected_products_count": len(state.selected_products) if state.selected_products else 0,
-            "store_name": tenant.name,
-            "store_niche": tenant.store_niche or "loja online",
-            "conversation_history": state.conversation_history,
-        }
-        
-        # Add product titles to context for better routing
-        if state.selected_products:
-            titles = [p.get("title", "") for p in state.selected_products[:3]]
-            context["last_products_discussed"] = ", ".join(titles)
-
-        # Run Classification (Router)
-        # This was missing! Without this, the agent never updated intent/domain based on new input.
-        decision = classify(text, context=context, use_llm=True)
-        
-        # Apply decision to state
-        state.set_intent(decision.intent)
-        
-        # Only switch domain if not forcing current one (e.g. simple confirmation)
-        if not state.soft_context.get('keep_current_domain'):
-            state.domain = decision.domain
-        
-        apply_entities_to_state(state, decision.entities)
-        
-        state.sentiment_level = decision.sentiment_level
-        state.sentiment_score = decision.sentiment_score
-        state.needs_handoff = decision.needs_handoff
-        state.handoff_reason = decision.handoff_reason
-        
-        # Frustration Check
-        def _has_frustration(msg_text):
-            return any(k in msg_text.lower() for k in FRUSTRATION_KEYWORDS)
-
-        if decision.sentiment_level != "calm" or _has_frustration(text):
-            state.bump_frustration()
-            # If high frustration, force handoff potentially? (Handled by graph policies usually)
-
-        # Process with AI agent/graph
-        result_state = await asyncio.to_thread(run_main_graph, state, tenant)
-        
-        response_text = result_state.last_bot_message
-        
-        if response_text:
-            # Record sent message for anti-loop
-            _record_sent_message(response_text)
-            
-            save_session(tenant_uuid, session_id, result_state)
-            
-            await adapter.mark_as_read(message_id)
-            
-            # Split into multiple messages for natural conversation feel
-            chunks = _split_message(response_text)
-            
-            for i, chunk in enumerate(chunks):
-                send_result = await adapter.send_text_message(
-                    to=from_number,
-                    text=chunk,
+        # Split em chunks naturais e envia com delay humano.
+        chunks = _split_message(result.bot_message)
+        for i, chunk in enumerate(chunks):
+            if i > 0 and _superseded():
+                logger.info(
+                    f"[BUFFER] Envio interrompido no chunk {i+1}/{len(chunks)} "
+                    f"p/ sessão ...{session_id[-4:]} — chegou mensagem nova"
                 )
-                
-                if not send_result.success:
-                    logger.error(f"Failed to send WhatsApp chunk {i+1}/{len(chunks)}: {send_result.error}")
-                    break
-                
-                # Human-like delay between messages (skip after last)
-                if i < len(chunks) - 1:
-                    delay = min(1.0 + len(chunk) / 200, 2.5)  # 1.0s–2.5s based on length
-                    await asyncio.sleep(delay)
-        else:
-            save_session(tenant_uuid, session_id, result_state)
-            
+                break
+            send_result = await adapter.send_text_message(
+                to=from_number,
+                text=chunk,
+            )
+            if not send_result.success:
+                logger.error(
+                    f"Failed to send WhatsApp chunk {i+1}/{len(chunks)}: "
+                    f"{send_result.error}"
+                )
+                break
+            if i < len(chunks) - 1:
+                delay = min(1.0 + len(chunk) / 200, 2.5)
+                await asyncio.sleep(delay)
+
     except Exception as e:
         logger.error(f"Error processing WhatsApp message: {e}", exc_info=True)
 
@@ -554,15 +478,27 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     # Get tenant config (Async)
     try:
         if tenant_id == "demo":
-            # Mock demo tenant for local debugging
+            # Tenant demo para debug local — credenciais via env, sem hardcode.
+            demo_url = os.getenv("EVOLUTION_DEMO_INSTANCE_URL")
+            demo_key = os.getenv("EVOLUTION_DEMO_API_KEY")
+            if not demo_url or not demo_key:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Demo tenant não configurado — defina "
+                        "EVOLUTION_DEMO_INSTANCE_URL e EVOLUTION_DEMO_API_KEY"
+                    ),
+                )
             from app.core.tenancy import TenantConfig
             tenant = TenantConfig(
                 tenant_id="demo",
                 name="Demo Store",
                 whatsapp_provider="evolution",
-                whatsapp_instance_url="https://nouvaris-evolution-api.ojdb99.easypanel.host",
-                whatsapp_api_key="3507B4BFABD9-4F3B-B87E-E441338CF369",
-                whatsapp_instance_name="nouvaris",
+                whatsapp_instance_url=demo_url,
+                whatsapp_api_key=demo_key,
+                whatsapp_instance_name=os.getenv(
+                    "EVOLUTION_DEMO_INSTANCE_NAME", "default"
+                ),
                 active=True
             )
         else:
@@ -605,20 +541,27 @@ async def whatsapp_webhook(request: Request, tenant_id: str):
     raw_id = adapter.get_session_id() or message.from_number
     session_id = "".join(filter(str.isdigit, str(raw_id)))
     
-    # Buffer message
-    await message_buffer.add_message(
-        session_id,
-        message.text,
-        process_consolidated_message,
-        tenant_id,
-        message.from_number,
-        message.message_id,
-        session_id
+    # Buffer message (debounce). Retorna True se iniciou um lote novo.
+    is_new_batch = await message_buffer.add_message(
+        session_id=session_id,
+        text=message.text,
+        message_id=message.message_id,
+        process_callback=process_consolidated_message,
+        tenant_id=tenant_id,
+        from_number=message.from_number,
     )
-    
+
+    # Sinal de vida imediato: "digitando..." já na primeira mensagem do
+    # lote, antes do debounce vencer (best-effort, não-crítico).
+    if is_new_batch:
+        try:
+            await adapter.send_typing(to=message.from_number)
+        except Exception as e:
+            logger.debug(f"send_typing inicial falhou (não-crítico): {e}")
+
     return {
-        "success": True, 
-        "event": "message_buffered", 
+        "success": True,
+        "event": "message_buffered",
         "status": "processing_async"
     }
 

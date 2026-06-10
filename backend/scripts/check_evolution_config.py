@@ -1,9 +1,21 @@
+import os
+import sys
 import requests
 import json
 
-INSTANCE_URL = "https://nouvaris-evolution-api.ojdb99.easypanel.host"
-API_KEY = "3507B4BFABD9-4F3B-B87E-E441338CF369"
-INSTANCE_NAME = "nouvaris"
+from dotenv import load_dotenv
+
+load_dotenv()
+
+INSTANCE_URL = os.getenv("EVOLUTION_DEMO_INSTANCE_URL")
+API_KEY = os.getenv("EVOLUTION_DEMO_API_KEY")
+INSTANCE_NAME = os.getenv("EVOLUTION_DEMO_INSTANCE_NAME", "default")
+
+if not INSTANCE_URL or not API_KEY:
+    sys.exit(
+        "Defina EVOLUTION_DEMO_INSTANCE_URL e EVOLUTION_DEMO_API_KEY "
+        "(no .env ou no ambiente) antes de rodar este script."
+    )
 
 headers = {
     "apikey": API_KEY,

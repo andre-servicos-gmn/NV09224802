@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useEffect, ReactNode, useCallback 
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { MOCK_ENABLED } from "@/lib/mock/fixtures";
 
 interface TenantContextType {
     logoUrl: string | null;
@@ -40,6 +41,18 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         // Load tenant ID from storage and get user from Supabase
         const initAuth = async () => {
+            // MOCK: bypassa auth pra screenshots (NEXT_PUBLIC_MOCK=true), sem login.
+            if (MOCK_ENABLED) {
+                setTenantId("demo");
+                setUserId("mock-user");
+                setUserEmail("demo@nouva.com");
+                setUserName("André Tudorov");
+                setCompanyName("Nouva Demo");
+                setLogoUrl("/nouvaris-icon.jpeg");
+                setIsLoading(false);
+                return;
+            }
+
             const stored = localStorage.getItem("nouva_tenant_id");
             if (stored) {
                 setTenantId(stored);

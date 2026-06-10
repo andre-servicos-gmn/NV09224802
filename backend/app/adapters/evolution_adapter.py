@@ -4,6 +4,7 @@ Simplified version with proper LID (Linked Device ID) handling.
 Documentation: https://doc.evolution-api.com/
 """
 import logging
+import re
 from typing import Optional
 import httpx
 from fastapi import Request
@@ -14,6 +15,36 @@ from app.adapters.whatsapp_base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_for_whatsapp(text: str) -> str:
+    """Converte markdown padrão para sintaxe do WhatsApp.
+
+    WhatsApp usa *bold* (1 asterisco) e _italic_ (underscore), não
+    a sintaxe Markdown padrão **bold**. gpt-4o-mini foi treinado em
+    Markdown padrão e às vezes escapa para esse formato apesar do
+    system prompt pedir o contrário. Esta função é o fallback de
+    segurança.
+
+    Transformações:
+    - **palavra** -> *palavra*  (bold duplo -> bold simples)
+    - [texto](url) -> texto: url  (link Markdown -> texto + URL crua)
+
+    Mantém:
+    - *palavra*    (já no formato WhatsApp)
+    - _palavra_    (itálico WhatsApp)
+    - Quebras de linha, emojis, espaços
+    """
+    if not text:
+        return text
+
+    # 1. **bold** -> *bold* (exatamente 2 asteriscos)
+    text = re.sub(r'\*\*([^\*]+?)\*\*', r'*\1*', text)
+
+    # 2. [texto](url) -> texto: url (link Markdown vira texto + URL crua)
+    text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1: \2', text)
+
+    return text
 
 
 class EvolutionAdapter(WhatsAppAdapterBase):
@@ -130,9 +161,12 @@ class EvolutionAdapter(WhatsAppAdapterBase):
             # Clean phone number
             number = to.replace("@s.whatsapp.net", "").replace("@lid", "")
             number = number.replace("+", "").replace("-", "").replace(" ", "")
-            
+
+            # Sanitize markdown for WhatsApp (defense-in-depth pra escapes do LLM)
+            text = _sanitize_for_whatsapp(text)
+
             logger.info(f"📤 Sending to: {number}")
-            
+
             response = await self._client.post(
                 f"/message/sendText/{self.instance_name}",
                 json={"number": number, "text": text},
@@ -203,7 +237,19 @@ class EvolutionAdapter(WhatsAppAdapterBase):
             return response.status_code in (200, 201)
         except Exception:
             return False
-    
+
+    async def send_typing(self, to: str) -> bool:
+        """Sinaliza 'digitando...' no chat do cliente via Evolution presence API."""
+        try:
+            response = await self._client.post(
+                f"/chat/sendPresence/{self.instance_name}",
+                json={"number": to, "presence": "composing"},
+            )
+            return response.status_code in (200, 201)
+        except Exception as e:
+            logger.warning(f"send_typing falhou: {e}")
+            return False
+
     async def close(self):
         """Close the HTTP client."""
         await self._client.aclose()

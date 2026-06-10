@@ -21,6 +21,8 @@ import {
     ChevronRight
 } from "lucide-react";
 
+import { MOCK_ENABLED, mockConversationsForTab, MOCK_MESSAGES } from "@/lib/mock/fixtures";
+
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 interface Conversation {
@@ -81,6 +83,15 @@ export default function ConversationsPage() {
 
     // Fetch conversations
     const fetchConversations = async (pageNum: number = page) => {
+        // MOCK: fixtures pra screenshots (NEXT_PUBLIC_MOCK=true), sem backend.
+        if (MOCK_ENABLED) {
+            setConversations(mockConversationsForTab(tab));
+            setHasMore(false);
+            setLoadingConversations(false);
+            setError(null);
+            return;
+        }
+
         if (!tenantId) return;
 
         setLoadingConversations(true);
@@ -103,6 +114,14 @@ export default function ConversationsPage() {
 
     // Fetch messages for selected conversation
     const fetchMessages = async (conversationId: string) => {
+        // MOCK: fixtures pra screenshots (NEXT_PUBLIC_MOCK=true), sem backend.
+        if (MOCK_ENABLED) {
+            setMessages((MOCK_MESSAGES[conversationId] as Message[]) || []);
+            setTimeout(scrollToBottom, 100);
+            setLoadingMessages(false);
+            return;
+        }
+
         setLoadingMessages(true);
 
         try {

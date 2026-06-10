@@ -12,6 +12,7 @@ import {
     computeTopics,
     computeResolutionRate
 } from "@/lib/dashboard/compute";
+import { MOCK_ENABLED, MOCK_DASHBOARD_METRICS } from "@/lib/mock/fixtures";
 
 // const TENANT_ID = "demo"; // REMOVED hardcoded value
 
@@ -30,6 +31,13 @@ export default function DashboardPage() {
     useEffect(() => {
         async function loadData() {
             try {
+                // MOCK: dados fake pra screenshots (NEXT_PUBLIC_MOCK=true), sem backend.
+                if (MOCK_ENABLED) {
+                    setMetrics(MOCK_DASHBOARD_METRICS);
+                    setLoading(false);
+                    return;
+                }
+
                 // Get Tenant ID from localStorage (saved by Login)
                 const storedTenantId = localStorage.getItem("nouva_tenant_id");
                 // setDebugTenant(storedTenantId); // SET DEBUG REMOVED

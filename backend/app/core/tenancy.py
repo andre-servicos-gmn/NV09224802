@@ -22,7 +22,8 @@ class TenantConfig(BaseModel):
     shopify_access_token: str | None = None
     shopify_api_version: str = "2024-01"
     webhook_secret: str | None = None  # Secret for webhook HMAC validation
-    brand_voice: str = "curto_humano"
+    brand_voice: str | None = None  # Texto livre do tom da marca; NULL → default profissional
+    store_policies_summary: str | None = None  # Resumo de políticas (troca/frete/prazo); NULL → bot diz que precisa verificar
     handoff_message: str = "Vou te colocar com um atendente humano..."
     store_niche: str | None = None
     active: bool = True
@@ -142,7 +143,8 @@ class TenantRegistry:
             shopify_access_token=actual_token,
             shopify_api_version=data.get("shopify_api_version", "2024-01"),
             webhook_secret=data.get("webhook_secret"),  # For webhook HMAC validation
-            brand_voice=data.get("brand_voice", "curto_humano"),
+            brand_voice=data.get("brand_voice"),
+            store_policies_summary=data.get("store_policies_summary"),
             handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),
             store_niche=store_niche,
             active=data.get("active", True),
@@ -254,7 +256,8 @@ class TenantRegistry:
             shopify_access_token=actual_token,
             shopify_api_version=data.get("shopify_api_version", "2024-01"),
             webhook_secret=data.get("webhook_secret"),  # For webhook HMAC validation
-            brand_voice=data.get("brand_voice", "curto_humano"),
+            brand_voice=data.get("brand_voice"),
+            store_policies_summary=data.get("store_policies_summary"),
             handoff_message=data.get("handoff_message", "Vou te colocar com um atendente humano..."),
             store_niche=store_niche,
             active=data.get("active", True),
